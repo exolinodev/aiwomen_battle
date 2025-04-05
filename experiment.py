@@ -17,6 +17,7 @@ import sys
 import json
 from collections import defaultdict
 from datetime import datetime
+import time
 
 class EnhancedRhythmicVideoEditor:
     """
@@ -52,24 +53,26 @@ class EnhancedRhythmicVideoEditor:
 
     def __init__(self, clips_dir, audio_path, output_file=None, temp_dir=None, config=None):
         """Initialize the editor with paths and configuration"""
-        if find_peaks is None:
-            raise ImportError("Scipy is required for beat detection. Please install it: pip install scipy")
+        self.start_time = time.time() # Record start time
+        self.clips_dir = os.path.abspath(clips_dir) # Use absolute paths
+        self.audio_path = os.path.abspath(audio_path)
 
-        self.clips_dir = clips_dir
-        self.audio_path = audio_path
-
-        # Generate timestamp for unique filenames
-        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
+        # Determine output directory and filename
         if output_file is None:
-            # Default output in the *parent* directory of the clips dir
-            clips_parent_dir = os.path.dirname(clips_dir) if os.path.dirname(clips_dir) else "."
-            output_file = os.path.join(clips_parent_dir, f"rhythmic_video_{self.timestamp}.mp4")
-        self.output_file = output_file
+            # Default output in the output directory
+            output_file = os.path.join(os.path.dirname(clips_dir), "rhythmic_video.mp4")
+        self.output_file = os.path.abspath(output_file)
+        output_dir = os.path.dirname(self.output_file)
 
+        # Determine temp directory - always in the output directory
         if temp_dir is None:
-            temp_dir = os.path.join(os.path.dirname(output_file), f"temp_{self.timestamp}")
-        self.temp_dir = temp_dir
+            # Use the output filename (without extension) for the temp directory name
+            output_name = os.path.splitext(os.path.basename(output_file))[0]
+            temp_dir = os.path.join(output_dir, f"temp_{output_name}")
+        self.temp_dir = os.path.abspath(temp_dir)
+
+        # Generate a unique identifier for temporary files
+        self.temp_id = os.path.splitext(os.path.basename(output_file))[0]
 
         # Default configuration
         self.default_config = {
@@ -1005,7 +1008,6 @@ class EnhancedRhythmicVideoEditor:
         selected["video_bitrate"] = self.config.get("video_bitrate", selected["video_bitrate"])
         return selected
 
-    # --- THIS IS THE CORRECTED FUNCTION ---
     def _ensure_shorts_resolution(self, input_file, output_file):
         """Ensure video is in 9:16 aspect ratio (e.g., 1080x1920) for YouTube Shorts, preserving audio."""
         target_res = self.config['resolution']
@@ -1069,60 +1071,48 @@ class EnhancedRhythmicVideoEditor:
             print(f"Error ensuring Shorts resolution: {e}")
             print(f"FFmpeg stderr (Shorts Resolution):\n{err_msg}")
             return None
-    # --- END OF CORRECTED FUNCTION ---
 
+    def _log_time(self, message):
+        """Log a message with elapsed time since start."""
+        elapsed = time.time() - self.start_time
+        print(f"\n[{elapsed:.2f}s] {message}")
 
     # --- create_beat_synchronized_video ---
     def create_beat_synchronized_video(self):
-        """
-        Create a video synchronized to music beats, respecting duration limits,
-        and applying final audio/video processing including fades.
-        """
-        if len(self.beat_times) < 2:
-            raise ValueError(f"Not enough beat times ({len(self.beat_times)}) to create segments. Need at least 2 (start and end).")
-        if not self.video_clips:
-            raise ValueError("No valid video clips found to create video from.")
-
-        # --- Initial Duration Handling ---
-        # Ensure duration config (if set) respects Shorts limit, adjust effective_max_time and beats if needed
-        user_max_duration = self.config.get("duration")
-        shorts_limit = 60.0
-        if user_max_duration is not None and user_max_duration > shorts_limit:
-            print(f"Warning: Configured duration ({user_max_duration}s) exceeds YouTube Shorts limit ({shorts_limit}s). Clamping to {shorts_limit}s.")
-            self.config["duration"] = shorts_limit
-            # Adjust effective_max_time only if it was previously longer than the new limit
-            if self.effective_max_time > shorts_limit:
-                 print(f"Re-adjusting effective max time from {self.effective_max_time:.2f}s to {shorts_limit:.2f}s due to clamping.")
-                 self.effective_max_time = shorts_limit
-                 # Re-filter beat times based on the new effective_max_time
-                 print("Re-filtering beat times after duration clamp...")
-                 original_beat_count = len(self.beat_times)
-                 self.beat_times = self.beat_times[self.beat_times <= self.effective_max_time]
-                 # Ensure end time is still present after filtering
-                 if len(self.beat_times) == 0 or self.beat_times[-1] < self.effective_max_time - 0.05:
-                     if self.effective_max_time > 0: # Avoid adding 0 twice if effective_max_time became 0
-                        self.beat_times = np.append(self.beat_times, self.effective_max_time)
-                 self.beat_times = np.unique(self.beat_times) # Ensure sorted unique
-                 print(f"Beat times adjusted from {original_beat_count} to {len(self.beat_times)}.")
-                 if len(self.beat_times) < 2:
-                      raise ValueError("Not enough beat times remaining after duration clamp. Cannot create segments.")
+        """Main workflow to create the synchronized video."""
+        if len(self.beat_times) < 2: raise ValueError("Not enough beats detected!")
+        if not self.video_clips: raise ValueError("No valid video clips found!")
 
         # Config shortcuts
-        transition_duration_config = self.config["transition_duration"]
-        min_clip_dur_config = self.config["min_clip_duration"]
-        max_clip_dur_config = self.config["max_clip_duration"]
-        # Min segment duration needs to be slightly > 0, consider transition overlap? Not strictly needed for concat demuxer.
-        min_segment_duration_safe = 0.1 # Absolute minimum segment duration after speed changes etc.
+        min_segment_dur_config = self.config["min_clip_duration"]
+        max_segment_dur_config = self.config["max_clip_duration"]
+        min_allowed_segment_dur = 0.1 # Absolute minimum
 
+        # Initialize metadata list and other variables
         created_segments_metadata = []
-        total_processed_duration = 0.0 # Track sum of final segment durations
+        total_processed_duration = 0
+        temp_files_created = []
+        processing_failed = False
 
-        print(f"\n--- Creating {len(self.beat_times) - 1} Video Segments (Target End: {self.beat_times[-1]:.2f}s) ---")
-        num_segments_to_create = len(self.beat_times) - 1
+        # --- Determine Target Resolution Early ---
+        target_resolution_str = None
+        if self.config['add_intro'] or self.config['add_outro']:
+             target_resolution_str = self._get_target_resolution_str()
+
+        # --- Generate Individual Segments ---
+        self._log_time("--- Stage 1: Generating Beat-Matched Segments ---")
+        processed_segments_info = []
+        temp_segment_files_to_clean = [] # Track intermediates for this stage
         previous_clip_path = None
+        total_beat_intervals = len(self.beat_times) - 1
+
+        # --- Create Final Concatenation List File ---
+        concat_list_filename = f"final_assembly_list_{self.temp_id}.txt"
+        concat_list_path = os.path.join(self.temp_dir, concat_list_filename)
+        self._log_time("Creating final assembly list...")
 
         # --- Segment Creation Loop ---
-        for i in range(num_segments_to_create):
+        for i in range(total_beat_intervals):
             start_time = self.beat_times[i]
             end_time = self.beat_times[i+1]
             target_duration = end_time - start_time
@@ -1132,11 +1122,11 @@ class EnhancedRhythmicVideoEditor:
                 print(f"  Warning: Skipping segment {i+1} due to near-zero target duration ({target_duration:.3f}s).")
                 continue
 
-            print(f"\nSegment {i+1}/{num_segments_to_create} ({start_time:.2f}s -> {end_time:.2f}s)")
+            print(f"\nSegment {i+1}/{total_beat_intervals} ({start_time:.2f}s -> {end_time:.2f}s)")
             print(f"  Target Duration: {target_duration:.2f}s")
 
             # Apply min/max segment duration constraints from config
-            segment_duration = np.clip(target_duration, min_clip_dur_config, max_clip_dur_config)
+            segment_duration = np.clip(target_duration, min_segment_dur_config, max_segment_dur_config)
             duration_changed = False
             if abs(segment_duration - target_duration) > 0.01: duration_changed = True
 
@@ -1145,7 +1135,7 @@ class EnhancedRhythmicVideoEditor:
 
 
             # --- Select Clip & Handle Duration/Speed Constraints ---
-            clip_info = self._select_clip(previous_clip=previous_clip_path, sequence_position=i, total_sequences=num_segments_to_create)
+            clip_info = self._select_clip(previous_clip=previous_clip_path, sequence_position=i, total_sequences=total_beat_intervals)
             clip_path = clip_info["path"]
             speed = clip_info["speed"]
             visual_effect = clip_info["visual_effect"]
@@ -1174,7 +1164,7 @@ class EnhancedRhythmicVideoEditor:
 
                  # Try selecting a different clip
                  new_clip_info = self._select_clip(previous_clip=clip_path, # Avoid immediate repeat
-                                                    sequence_position=i, total_sequences=num_segments_to_create)
+                                                    sequence_position=i, total_sequences=total_beat_intervals)
 
                  # Update clip info and re-evaluate
                  clip_info = new_clip_info
@@ -1202,11 +1192,11 @@ class EnhancedRhythmicVideoEditor:
                  print(f"  Warning: No clip found long enough after {max_attempts} attempts. Forcing segment {i+1} to fit {os.path.basename(clip_path)} ({original_clip_duration:.2f}s).")
                  source_duration_needed = original_clip_duration # Use the full available duration of the clip
                  segment_duration = source_duration_needed / speed # Recalculate the final duration of this segment based on the source and speed
-                 segment_duration = max(min_segment_duration_safe, segment_duration) # Ensure it's not too short
+                 segment_duration = max(min_allowed_segment_dur, segment_duration) # Ensure it's not too short
 
                  # Check against safe minimum again AFTER recalculation
-                 if segment_duration < min_segment_duration_safe:
-                      print(f"  Error: Shortened segment duration ({segment_duration:.2f}s) still below safe minimum ({min_segment_duration_safe:.2f}s). Skipping segment.")
+                 if segment_duration < min_allowed_segment_dur:
+                      print(f"  Error: Shortened segment duration ({segment_duration:.2f}s) still below safe minimum ({min_allowed_segment_dur:.2f}s). Skipping segment.")
                       continue
                  print(f"   -> New Final Segment Duration: {segment_duration:.2f}s")
                  clip_start = 0 # Start from beginning since we are using the whole clip
@@ -1364,7 +1354,7 @@ class EnhancedRhythmicVideoEditor:
         # Using concat demuxer. This method is simple but sensitive to variations
         # between segments (resolution, fps, timebase). Re-encoding during concat is safer.
         print(f"\n--- Combining {len(created_segments_metadata)} Video Segments using FFmpeg Concat Demuxer ---")
-        concat_list_file = os.path.join(self.temp_dir, f"final_concat_list_{self.timestamp}.txt")
+        concat_list_file = os.path.join(self.temp_dir, f"final_concat_list_{self.temp_id}.txt")
         valid_segment_count = 0
         with open(concat_list_file, 'w', encoding='utf-8') as f:
             for segment_meta in created_segments_metadata:
@@ -1381,7 +1371,7 @@ class EnhancedRhythmicVideoEditor:
              raise ValueError("No valid segments remain for final concatenation!")
         print(f"Concatenating {valid_segment_count} valid segments.")
 
-        silent_output_video = os.path.join(self.temp_dir, f"silent_output_{self.timestamp}.mp4")
+        silent_output_video = os.path.join(self.temp_dir, f"silent_output_{self.temp_id}.mp4")
         quality = self.config["quality"]
         preset_cfg = self._get_quality_preset(quality) # Get preset/crf/bitrate based on quality
 
@@ -1521,7 +1511,7 @@ class EnhancedRhythmicVideoEditor:
             final_cmd.extend(["-af", audio_filter_str]) # Apply audio fades if specified
 
         # Output File (Initial location before potential resolution check)
-        muxed_output_file = os.path.join(self.temp_dir, f"muxed_output_{self.timestamp}.mp4")
+        muxed_output_file = os.path.join(self.temp_dir, f"muxed_output_{self.temp_id}.mp4")
         final_cmd.extend([muxed_output_file, "-y"])
 
         try:
@@ -1574,7 +1564,7 @@ class EnhancedRhythmicVideoEditor:
     def create_config_file(self, config_file=None):
         """Save current configuration to a JSON file"""
         if config_file is None:
-            config_file = os.path.join(os.path.dirname(self.output_file), f"video_config_{self.timestamp}.json")
+            config_file = os.path.join(os.path.dirname(self.output_file), f"video_config_{self.temp_id}.json")
 
         config_to_save = self.config.copy()
         try:
@@ -1611,14 +1601,48 @@ class EnhancedRhythmicVideoEditor:
 
     def cleanup(self):
         """Delete temporary files and directory"""
-        if os.path.exists(self.temp_dir):
-            try:
-                shutil.rmtree(self.temp_dir)
-                print(f"Temporary directory deleted: {self.temp_dir}")
-            except OSError as e:
-                print(f"Warning: Error deleting temporary directory {self.temp_dir}: {e}")
-        else:
-            print("Temporary directory not found, no cleanup needed.")
+        # Get the parent directory of the temp directory
+        parent_dir = os.path.dirname(self.temp_dir)
+        
+        # Find all temp directories in the parent directory
+        temp_dirs = [d for d in os.listdir(parent_dir) if d.startswith("temp_") and os.path.isdir(os.path.join(parent_dir, d))]
+        
+        # Delete each temp directory
+        for temp_dir_name in temp_dirs:
+            temp_dir_path = os.path.join(parent_dir, temp_dir_name)
+            if os.path.exists(temp_dir_path):
+                try:
+                    # First try to remove any files in the directory
+                    for root, dirs, files in os.walk(temp_dir_path, topdown=False):
+                        for name in files:
+                            try:
+                                file_path = os.path.join(root, name)
+                                os.remove(file_path)
+                            except OSError as e:
+                                print(f"Warning: Could not remove file {file_path}: {e}")
+                        for name in dirs:
+                            try:
+                                dir_path = os.path.join(root, name)
+                                os.rmdir(dir_path)
+                            except OSError as e:
+                                print(f"Warning: Could not remove directory {dir_path}: {e}")
+                    
+                    # Then try to remove the temp directory itself
+                    try:
+                        os.rmdir(temp_dir_path)
+                        print(f"Temporary directory deleted: {temp_dir_path}")
+                    except OSError as e:
+                        print(f"Warning: Could not remove temporary directory {temp_dir_path}: {e}")
+                        # If rmdir fails, try rmtree as a last resort
+                        try:
+                            shutil.rmtree(temp_dir_path, ignore_errors=True)
+                            print(f"Temporary directory forcefully deleted: {temp_dir_path}")
+                        except Exception as e2:
+                            print(f"Error: Failed to delete temporary directory {temp_dir_path}: {e2}")
+                except Exception as e:
+                    print(f"Error during cleanup of {temp_dir_path}: {e}")
+            else:
+                print(f"Temporary directory not found: {temp_dir_path}")
 
 # --- Main Execution Block ---
 def main():
@@ -1719,7 +1743,28 @@ def main():
 
     # --- Create Initial Configuration Dictionary from Args ---
     # Start with defaults, then update with CLI args
-    editor_config_init = EnhancedRhythmicVideoEditor(args.input_dir, audio_file).default_config.copy()
+    editor_config_init = {
+        "quality": "medium",  # Quality preset for video encoding
+        "video_codec": "libx264",  # Video codec to use
+        "audio_codec": "aac",  # Audio codec to use
+        "audio_bitrate": "192k",  # Audio bitrate
+        "min_clip_duration": 2.0,  # Minimum duration for a clip segment
+        "max_clip_duration": 6.0,  # Maximum duration for a clip segment
+        "min_speed": 0.7,  # Minimum playback speed
+        "max_speed": 1.3,  # Maximum playback speed
+        "speed_change_probability": 0.2,  # Probability of changing speed for a segment
+        "transition_type": "none",  # Type of transition between segments
+        "transition_duration": 0.5,  # Duration of transitions (if used)
+        "transition_safe": True,  # Whether to use safe transitions
+        "hard_cut_ratio": 0.1,  # Ratio of hard cuts to use
+        "random_clip_strength": 0.95,  # How strongly to favor random clip selection
+        "video_fade_out_duration": 0.0,  # Duration of video fade out
+        "audio_fade_in": 0.0,  # Duration of audio fade in
+        "audio_fade_out": 0.0,  # Duration of audio fade out
+        "add_intro": False,  # Whether to add an intro
+        "add_outro": False,  # Whether to add an outro
+    }
+
     # Only update duration if provided via CLI, otherwise keep default (60s)
     if args.duration is not None:
         editor_config_init["duration"] = args.duration
@@ -1812,11 +1857,20 @@ def main():
         print("-" * 60, file=sys.stderr)
         exit_code = 1
     finally:
-        # Cleanup logic
-        if not args.keep_temp and exit_code == 0:
-             print("-" * 60); editor.cleanup()
-        elif args.keep_temp: print("-" * 60 + f"\nTemporary files kept in: {editor.temp_dir}")
-        else: print("-" * 60 + f"\nError occurred, temporary files kept for debugging in: {editor.temp_dir}")
+        # Cleanup logic - ensure it runs even if editor creation failed
+        if 'editor' in locals() and editor is not None:  # Only try cleanup if editor was created
+            if not args.keep_temp and exit_code == 0:
+                print("-" * 60)
+                try:
+                    editor.cleanup()
+                except Exception as cleanup_error:
+                    print(f"Warning: Error during cleanup: {cleanup_error}")
+            elif args.keep_temp:
+                print("-" * 60 + f"\nTemporary files kept in: {editor.temp_dir}")
+            else:
+                print("-" * 60 + f"\nError occurred, temporary files kept for debugging in: {editor.temp_dir}")
+        else:
+            print("-" * 60 + "\nNo editor instance to clean up")
 
     return exit_code
 
