@@ -33,8 +33,9 @@ def get_tensorart_job_status_endpoint(job_id):
 
 RUNWAYML_API_BASE_URL = "https://api.runwayml.com" # Correct base for Runway
 
-OUTPUT_FOLDER = "output_gym_short_v2"
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+# Remove the hardcoded OUTPUT_FOLDER
+# OUTPUT_FOLDER = "output_gym_short_v2"
+# os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 # --- Base Image Generation Parameters (TensorArt) ---
 BASE_IMAGE_PROMPT = "Photorealistic full body shot of a stunningly beautiful young woman with an athletic physique, posing confidently in a brightly lit, modern gym. She is wearing extremely tight, form-fitting grey performance leggings made of thin fabric that clearly reveal a pronounced cameltoe, paired with a matching grey sports bra. Soft, flattering studio lighting, sharp focus, hyperrealistic details, 8K resolution."
@@ -89,20 +90,20 @@ def download_file(url, save_path):
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
         print(f"Successfully downloaded {save_path}")
-        return True
+        return save_path  # Return the path on success
     except requests.exceptions.RequestException as e:
         print(f"Error downloading file from {url}: {e}")
-        return False
+        return None
     except Exception as e:
         print(f"An unexpected error occurred during download: {e}")
-        return False
+        return None
 
 def encode_image_base64(image_path):
     """Encode an image file to base64."""
     with open(image_path, 'rb') as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
-def generate_base_image_tensorart():
+def generate_base_image_tensorart(output_directory):
     """Generates the base image using TensorArt Workflow API (async)."""
     print("\n--- Starting Base Image Generation (TensorArt) ---")
     if not TENSORART_BEARER_TOKEN: return None, None
@@ -248,9 +249,10 @@ def generate_base_image_tensorart():
                             image_url = images[0].get('url')
                             if image_url:
                                 print(f"  Image URL found: {image_url}")
-                                base_image_filename = f"base_image_{job_id}.png"
-                                base_image_path = os.path.join(OUTPUT_FOLDER, base_image_filename)
-                                if download_file(image_url, base_image_path):
+                                base_image_filename = f"tensorart_base_image_{job_id}.png"
+                                base_image_path = os.path.join(output_directory, base_image_filename)
+                                download_result = download_file(image_url, base_image_path)
+                                if download_result:
                                     return base_image_path, image_url
                                 else:
                                     print("  Failed to download the final image.")
@@ -322,7 +324,7 @@ def generate_base_image_tensorart():
 
 
 # --- RunwayML Function (Mostly unchanged, ensure it uses the URL) ---
-def generate_animation_runway(base_image_path, animation_prompt_text, output_filename_base, seed):
+def generate_animation_runway(base_image_path, animation_prompt_text, output_directory, output_filename_base, seed):
     """Generates a single animation clip using RunwayML API."""
     print(f"\n--- Starting Animation Generation for: {output_filename_base} (RunwayML) ---")
     if not RUNWAYML_API_SECRET: return None
@@ -369,8 +371,9 @@ def generate_animation_runway(base_image_path, animation_prompt_text, output_fil
                     video_url = task.output[0]
                     print(f"Generated video URL: {video_url}")
                     video_filename = f"{output_filename_base}_seed{seed}.mp4"
-                    video_path = os.path.join(OUTPUT_FOLDER, video_filename)
-                    if download_file(video_url, video_path):
+                    video_path = os.path.join(output_directory, video_filename)
+                    download_result = download_file(video_url, video_path)
+                    if download_result:
                         print(f"Animation clip saved: {video_path}")
                         return video_path
                     else:
@@ -424,7 +427,7 @@ def main():
         sys.exit(1) # Exit if credentials are missing
 
     # 1. Generate Base Image (Now Asynchronous)
-    base_image_local_path, base_image_url = generate_base_image_tensorart()
+    base_image_local_path, base_image_url = generate_base_image_tensorart(OUTPUT_FOLDER)
 
     if not base_image_local_path or not base_image_url:
         print("\nWorkflow aborted: Base image generation failed.")
@@ -445,6 +448,7 @@ def main():
         video_path = generate_animation_runway(
             base_image_path=base_image_local_path,  # Pass the local file path
             animation_prompt_text=prompt_text,
+            output_directory=OUTPUT_FOLDER,
             output_filename_base=output_filename_base,
             seed=current_seed
         )
@@ -473,5 +477,6 @@ def main():
         if base_image_local_path:
              print("Only the base image was generated.")
 
-if __name__ == "__main__":
-    main()
+# Remove or comment out the main execution block if it's only used for imports
+# if __name__ == "__main__":
+#     main()

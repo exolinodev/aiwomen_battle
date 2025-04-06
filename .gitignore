@@ -71,6 +71,7 @@ Thumbs.db
 Input/
 Output/
 Music_sync/ 
+workflow_output_*/
 
 # Specific paths
 /Users/dev/womanareoundtheworld/Generation/output_gym_short_v2 

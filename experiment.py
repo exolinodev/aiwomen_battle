@@ -1599,8 +1599,12 @@ class EnhancedRhythmicVideoEditor:
             print("Using previously loaded or default configuration.")
             return None # Indicate failure
 
-    def cleanup(self):
+    def cleanup(self, managed_externally=False):
         """Delete temporary files and directory"""
+        if managed_externally:
+            print("Cleanup skipped: Managed externally.")
+            return
+
         # Get the parent directory of the temp directory
         parent_dir = os.path.dirname(self.temp_dir)
         
