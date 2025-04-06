@@ -4,7 +4,6 @@ __pycache__/
 *$py.class
 *.so
 .Python
-env/
 build/
 develop-eggs/
 dist/
@@ -16,16 +15,51 @@ lib64/
 parts/
 sdist/
 var/
+wheels/
 *.egg-info/
 .installed.cfg
 *.egg
 
-# Logs
+# Virtual Environment
+venv/
+ENV/
+env/
+.env
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Project specific
+output_gym_short_v2/
 *.log
+*.mp4
+*.mov
+*.avi
+*.wav
+*.mp3
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.ico
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*~
+
+# Logs
 video_editor.log
 
 # OS generated files
-.DS_Store
 .DS_Store?
 ._*
 .Spotlight-V100
@@ -36,5 +70,7 @@ Thumbs.db
 # Project specific
 Input/
 Output/
-Generation/
 Music_sync/ 
+
+# Specific paths
+/Users/dev/womanareoundtheworld/Generation/output_gym_short_v2 
