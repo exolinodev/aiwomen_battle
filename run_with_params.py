@@ -91,7 +91,7 @@ def main():
     final_output_file = os.path.join(final_video_dir, f"{output_video_name}.mp4")
     
     # Build the command for experiment.py using parameters from coammnds.txt
-    audio_file = "/Users/dev/womanareoundtheworld/Music_sync/Done/spain/trash/Pasión en el Aire.mp3"
+    audio_file = "/Users/dev/womanareoundtheworld/music/Unstoppable Energy.mp3"
     
     cmd = [
         "python", "experiment.py",

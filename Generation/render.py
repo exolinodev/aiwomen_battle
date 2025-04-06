@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from runwayml import RunwayML
 from enum import Enum
 import sys # For exiting early
+import random # For random seeds
 
 class TaskStatus(Enum):
     PENDING = "PENDING"
@@ -38,13 +39,13 @@ RUNWAYML_API_BASE_URL = "https://api.runwayml.com" # Correct base for Runway
 # os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 # --- Base Image Generation Parameters (TensorArt) ---
-BASE_IMAGE_PROMPT = "Photorealistic full body shot of a stunningly beautiful young woman with an athletic physique, posing confidently in a brightly lit, modern gym. She is wearing extremely tight, form-fitting grey performance leggings made of thin fabric that clearly reveal a pronounced cameltoe, paired with a matching grey sports bra. Soft, flattering studio lighting, sharp focus, hyperrealistic details, 8K resolution."
+BASE_IMAGE_PROMPT = "Wide-angle photorealistic action shot capturing a stunningly beautiful young woman with a strong, athletic physique performing a weighted squat in the middle of a spacious, brightly lit, modern gym floor. Frame the shot as far away as possible, ensuring ample space around the subject to clearly show a significant amount of the surrounding environment: include visible weight racks, benches, other diverse gym equipment, and the general architecture of the expansive facility in the background. She displays focus and determination. She wears well-fitting, grey high-performance athletic leggings and a matching grey sports bra suited for intense workouts. Dynamic lighting illuminates both her muscular form and the detailed gym setting. Sharp focus on the subject with clear background context, hyperrealistic details, 8K resolution."
 BASE_IMAGE_NEGATIVE_PROMPT = "ugly, deformed, blurry, low quality, extra limbs, disfigured, poorly drawn face, bad anatomy, cartoon, drawing, illustration, text, watermark, signature, multiple people."
 BASE_IMAGE_WIDTH = 768 # Choose dimensions suitable for 9:16 animation later
 BASE_IMAGE_HEIGHT = 1280
 BASE_IMAGE_STEPS = 30
 BASE_IMAGE_CFG_SCALE = 7
-BASE_IMAGE_SAMPLER = "DPM++ 2M Karras"
+BASE_IMAGE_SAMPLER = "Euler"
 # !! IMPORTANT: Replace with the actual Model ID from TensorArt !!
 BASE_IMAGE_MODEL_ID = "757279507095956705" # Your provided model ID
 BASE_IMAGE_SEED = -1 # -1 for random
@@ -54,15 +55,33 @@ BASE_IMAGE_COUNT = 1 # Generate 1 base image
 ANIMATION_MODEL = "gen3a_turbo"
 ANIMATION_DURATION = 5 # seconds (5s = $0.25, 10s = $0.50)
 ANIMATION_RATIO = "768:1280" # Matches base image aspect ratio for portrait short
-ANIMATION_SEED_START = 42 # Use different seeds for variety
+ANIMATION_SEED_START = random.randint(1, 1000000) # Random seed for variety
 
 ANIMATION_PROMPTS = [
-    {"id": "01_breathing", "text": "Subtle breathing motion, the subject slightly shifts her weight. Locked camera. Live action style."},
-    {"id": "02_squat_start", "text": "The woman slowly begins to bend her knees, lowering slightly into a squat position. Camera remains steady."},
-    {"id": "03_pan_up", "text": "Camera slowly pans upwards, starting focused on her lower legs and smoothly travelling up towards her hips. The subject remains mostly still."},
-    {"id": "04_turn", "text": "The subject makes a very slight, slow turn of her torso and head, looking gently to the side. Handheld camera feel with minimal sway."},
-    {"id": "05_adjust", "text": "The subject subtly adjusts her stance, shifting her weight slightly."},
-    {"id": "06_zoom_out", "text": "Gentle breathing motion. Camera slowly zooms out slightly. Cinematic style."}
+    {
+        "id": "01_hold_breath",
+        "text": "Subject holds the low squat position, muscles tense under the weight. Subtle breathing motion visible in her chest and shoulders. Slight tremble in her legs indicating effort. Locked camera. Live action style."
+    },
+    {
+        "id": "02_squat_ascend_start",
+        "text": "The woman slowly begins to push upwards out of the squat, driving powerfully through her heels. Initial visible strain and muscle engagement in quads and glutes. Camera remains steady, focused on her form."
+    },
+    {
+        "id": "03_pan_up_legs",
+        "text": "Camera slowly pans upwards while she holds the low squat, starting focused on her ankles/shoes and smoothly travelling up her taut leggings over her calves and thighs towards her hips. Highlights muscle definition. Subject remains mostly still, focused."
+    },
+    {
+        "id": "04_focus_shift",
+        "text": "While holding the squat or during a slow ascent, the subject subtly shifts her gaze slightly, maintaining intense concentration. A bead of sweat might glisten. Handheld camera feel with minimal, natural sway."
+    },
+    {
+        "id": "05_weight_adjust",
+        "text": "The subject makes a tiny, controlled adjustment to her grip on the weights or slightly shifts the barbell position (if applicable), maintaining balance and form. Muscles in arms and shoulders flex momentarily. Close follow camera."
+    },
+    {
+        "id": "06_zoom_out_reveal",
+        "text": "Subject completes one squat rep, pausing briefly at the top or bottom. Camera smoothly zooms out, revealing more of the modern gym environment – racks, other equipment, bright lights – contextualizing her workout. Cinematic style."
+    }
 ]
 
 # --- Helper Functions ---
@@ -435,6 +454,13 @@ def main():
 
     print(f"\nBase image saved to: {base_image_local_path}")
     print(f"Using Base Image for animations: {base_image_local_path}")
+
+    # Add confirmation prompt before starting animations
+    print("\nReady to start generating animations.")
+    response = input("Do you want to continue with animation generation? (yes/no): ").lower().strip()
+    if response != 'yes':
+        print("Animation generation cancelled by user.")
+        sys.exit(0)
 
     # 2. Generate Animation Clips
     generated_clips = []
