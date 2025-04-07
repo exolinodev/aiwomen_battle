@@ -1,0 +1,14 @@
+{
+    "japan": {
+        "id": "01_japan",
+        "name": "Japan",
+        "colors": "red and white",
+        "flag_description": "Japanese flag"
+    },
+    "france": {
+        "id": "02_france",
+        "name": "France",
+        "colors": "blue, white, and red",
+        "flag_description": "French flag"
+    }
+} 

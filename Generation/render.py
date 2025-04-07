@@ -9,8 +9,7 @@ from runwayml import RunwayML
 from enum import Enum
 import sys # For exiting early
 import random # For random seeds
-from Generation.animation_prompts import ANIMATION_PROMPTS
-from Generation.base_image_prompts import BASE_IMAGE_PROMPTS, BASE_IMAGE_NEGATIVE_PROMPT
+from Generation.countries import COUNTRIES, BASE_IMAGE_NEGATIVE_PROMPT, ANIMATION_NEGATIVE_PROMPT
 
 class TaskStatus(Enum):
     PENDING = "PENDING"
@@ -53,10 +52,10 @@ BASE_IMAGE_SEED = -1 # -1 for random
 BASE_IMAGE_COUNT = 1 # Generate 1 base image
 
 # --- Animation Parameters (RunwayML Gen-3 Turbo) ---
-ANIMATION_MODEL = "gen3a_turbo"
-ANIMATION_DURATION = 5 # seconds (5s = $0.25, 10s = $0.50)
-ANIMATION_RATIO = "768:1280" # Matches base image aspect ratio for portrait short
-ANIMATION_SEED_START = random.randint(1, 1000000) # Random seed for variety
+ANIMATION_MODEL = "gen3a_turbo"  # Correct model name
+ANIMATION_DURATION = 5  # Must be either 5 or 10 seconds
+ANIMATION_RATIO = "768:1280"  # Must be either 768:1280 or 1280:768
+ANIMATION_SEED_START = random.randint(1, 1000000)  # Random seed for variety
 
 # Animation prompts are now imported from animation_prompts.py
 
@@ -95,8 +94,33 @@ def download_file(url, save_path):
 
 def encode_image_base64(image_path):
     """Encode an image file to base64."""
-    with open(image_path, 'rb') as image_file:
-        return base64.b64encode(image_file.read()).decode('utf-8')
+    try:
+        from PIL import Image
+        import io
+        
+        # Open and validate the image
+        with Image.open(image_path) as img:
+            # Check dimensions
+            width, height = img.size
+            if width != 768 or height != 1280:
+                print(f"Warning: Image dimensions {width}x{height} do not match required 768x1280")
+                # Resize image to match requirements
+                img = img.resize((768, 1280), Image.Resampling.LANCZOS)
+                print("Image has been resized to 768x1280")
+            
+            # Convert to RGB if necessary
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # Save to bytes
+            img_byte_arr = io.BytesIO()
+            img.save(img_byte_arr, format='PNG')
+            img_byte_arr = img_byte_arr.getvalue()
+            
+            return base64.b64encode(img_byte_arr).decode('utf-8')
+    except Exception as e:
+        print(f"Error processing image: {e}")
+        return None
 
 def generate_base_image_tensorart(output_directory, prompt_id=None, prompt_text=None):
     """Generates a base image using TensorArt Workflow API (async)."""
@@ -105,9 +129,9 @@ def generate_base_image_tensorart(output_directory, prompt_id=None, prompt_text=
     
     # Use the provided prompt or default to the first one
     if prompt_id is None or prompt_text is None:
-        prompt = BASE_IMAGE_PROMPTS[0]
-        prompt_id = prompt["id"]
-        prompt_text = prompt["text"]
+        prompt = COUNTRIES[0]["base_image_prompt"]
+        prompt_id = COUNTRIES[0]["id"]
+        prompt_text = prompt
     
     print(f"Generating base image for: {prompt_id}")
     
@@ -330,17 +354,25 @@ def generate_base_image_tensorart(output_directory, prompt_id=None, prompt_text=
 def generate_animation_runway(base_image_path, animation_prompt_text, output_directory, output_filename_base, seed):
     """Generates a single animation clip using RunwayML API."""
     print(f"\n--- Starting Animation Generation for: {output_filename_base} (RunwayML) ---")
-    if not RUNWAYML_API_SECRET: return None
+    if not RUNWAYML_API_SECRET: 
+        print("Error: RunwayML API secret not found")
+        return None
     if not base_image_path:
         print("Error: Base image path is required for Runway animation.")
+        return None
+    if not animation_prompt_text:
+        print("Error: Animation prompt text is required.")
         return None
 
     try:
         client = RunwayML(api_key=RUNWAYML_API_SECRET)
         print("Submitting Runway task...")
         
-        # Encode the image as base64
+        # Encode and validate the image
         image_base64 = encode_image_base64(base_image_path)
+        if not image_base64:
+            print("Error: Failed to encode image")
+            return None
         
         # Create the task with retry logic for rate limits
         max_retries = 5
@@ -349,13 +381,16 @@ def generate_animation_runway(base_image_path, animation_prompt_text, output_dir
         
         while retry_count < max_retries:
             try:
+                # Enhance the animation prompt
+                enhanced_prompt = f"Create a smooth, cinematic animation. {animation_prompt_text} Maintain consistent motion and high quality throughout the 5-second duration."
+                
                 # Create the task
                 task_response = client.image_to_video.create(
                     model=ANIMATION_MODEL,
-                    prompt_image=f"data:image/png;base64,{image_base64}",  # Pass as base64 data URL
-                    prompt_text=animation_prompt_text,
-                    duration=ANIMATION_DURATION,
-                    ratio=ANIMATION_RATIO,
+                    prompt_image=f"data:image/png;base64,{image_base64}",
+                    prompt_text=enhanced_prompt,
+                    duration=ANIMATION_DURATION,  # 5 seconds
+                    ratio=ANIMATION_RATIO,  # "768:1280"
                     seed=seed,
                     watermark=False
                 )
@@ -374,8 +409,14 @@ def generate_animation_runway(base_image_path, animation_prompt_text, output_dir
                     time.sleep(delay)
                     continue
                 else:
-                    # If it's not a rate limit error, re-raise
-                    raise
+                    print(f"Error creating task: {str(e)}")
+                    if hasattr(e, 'response'):
+                        print(f"Response status: {e.response.status_code}")
+                        try:
+                            print(f"Response body: {e.response.json()}")
+                        except:
+                            print(f"Response text: {e.response.text}")
+                    return None
         
         # Get the task ID from the response
         task_id = task_response.id
@@ -398,68 +439,43 @@ def generate_animation_runway(base_image_path, animation_prompt_text, output_dir
                     if hasattr(task, 'output') and task.output and len(task.output) > 0:
                         video_url = task.output[0]
                         print(f"Generated video URL: {video_url}")
+                        
+                        # Download the video
                         video_filename = f"{output_filename_base}_seed{seed}.mp4"
                         video_path = os.path.join(output_directory, video_filename)
-                        download_result = download_file(video_url, video_path)
-                        if download_result:
-                            print(f"Animation clip saved: {video_path}")
+                        
+                        print(f"Downloading video to: {video_path}")
+                        success = download_file(video_url, video_path)
+                        
+                        if success and os.path.exists(video_path):
+                            print(f"Successfully downloaded video to: {video_path}")
                             return video_path
                         else:
-                            print("Failed to download animation video.")
+                            print("Error: Failed to download video file")
                             return None
                     else:
-                        print("Error: No output URL found in completed task.")
-                        print("Task data:", task)
+                        print("Error: No video URL in task output")
                         return None
                 elif status == "FAILED":
-                    print(f"Error: Runway task {task_id} FAILED.")
-                    error = getattr(task, 'error', 'No error details available')
-                    print(f"Error details: {error}")
+                    print(f"Error: Runway task {task_id} failed.")
+                    if hasattr(task, 'error'):
+                        print(f"Error details: {task.error}")
                     return None
-                elif status in ["PROCESSING", "QUEUED", "PENDING", "RUNNING"]:
-                    print("Task still processing...")
-                    time.sleep(poll_retry_delay)
-                    poll_retry_count += 1
-                    continue
-                elif status == "THROTTLED":
-                    print("Task throttled due to rate limiting. Waiting longer before retry...")
-                    time.sleep(poll_retry_delay * 2)  # Wait longer when throttled
-                    poll_retry_count += 1
-                    continue
                 else:
-                    print(f"Warning: Unknown task status: {status}. Will retry...")
+                    print(f"Task still processing...")
                     time.sleep(poll_retry_delay)
                     poll_retry_count += 1
-                    continue
                     
             except Exception as e:
-                if hasattr(e, 'response') and e.response and e.response.status_code == 429:
-                    poll_retry_count += 1
-                    if poll_retry_count >= max_poll_retries:
-                        print("Error: Maximum retries reached for rate limit during polling. Please try again tomorrow.")
-                        return None
-                    
-                    # Calculate exponential backoff delay for polling
-                    delay = poll_retry_delay * (2 ** (poll_retry_count - 1))
-                    print(f"Rate limit reached during polling. Waiting {delay} seconds before retry {poll_retry_count}/{max_poll_retries}...")
-                    time.sleep(delay)
-                    continue
-                else:
-                    # If it's not a rate limit error, re-raise
-                    raise
-
-        print(f"Error: Task did not complete after {max_poll_retries} retries.")
+                print(f"Error polling Runway task: {str(e)}")
+                poll_retry_count += 1
+                time.sleep(poll_retry_delay)
+                
+        print("Error: Maximum polling retries reached")
         return None
-
+        
     except Exception as e:
-        print(f"An unexpected error occurred during RunwayML generation: {e}")
-        if hasattr(e, 'response'): 
-            print("Response:", e.response)
-            try:
-                error_data = e.response.json()
-                print("Error details:", error_data)
-            except:
-                print("Raw response:", e.response.text)
+        print(f"Error in Runway animation generation: {str(e)}")
         return None
 
 
@@ -491,13 +507,13 @@ def main():
     generated_clips = []
     current_seed = ANIMATION_SEED_START
 
-    for anim_prompt in ANIMATION_PROMPTS:
-        prompt_id = anim_prompt["id"]
-        prompt_text = anim_prompt["text"]
+    for country_key, country_data in COUNTRIES.items():
+        prompt_id = country_data["id"]
+        prompt_text = country_data["animation_prompt"]  # Use animation_prompt instead of base_image_prompt
         output_filename_base = f"animation_{prompt_id}"
 
         video_path = generate_animation_runway(
-            base_image_path=base_image_local_path,  # Pass the local file path
+            base_image_path=base_image_local_path,
             animation_prompt_text=prompt_text,
             output_directory=OUTPUT_FOLDER,
             output_filename_base=output_filename_base,
@@ -508,8 +524,6 @@ def main():
             generated_clips.append(video_path)
         else:
             print(f"Failed to generate animation for prompt: {prompt_id}")
-            # Optional: Decide whether to stop the whole process on one failure
-            # sys.exit(1)
 
         current_seed += 1
 
@@ -533,9 +547,9 @@ def generate_all_base_images(output_directory):
     print("\n--- Generating All Base Images ---")
     base_images = []
     
-    for prompt in BASE_IMAGE_PROMPTS:
-        prompt_id = prompt["id"]
-        prompt_text = prompt["text"]
+    for country_key, country_data in COUNTRIES.items():
+        prompt_id = country_data["id"]
+        prompt_text = country_data["base_image_prompt"]
         
         print(f"\nGenerating base image for: {prompt_id}")
         base_image_path, _ = generate_base_image_tensorart(
