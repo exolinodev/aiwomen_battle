@@ -15,9 +15,11 @@ try:
         ANIMATION_PROMPTS,  # Import the prompts list
         ANIMATION_SEED_START # Import start seed
     )
+    from Generation.voiceover import generate_voiceover_for_video
+    from Generation.video_editor import create_final_video
 except ImportError as e:
     print(f"Error importing required modules: {e}")
-    print("Ensure render.py is in the correct directory.")
+    print("Ensure render.py, voiceover.py, and video_editor.py are in the correct directory.")
     sys.exit(1)
 
 def main():
@@ -31,11 +33,14 @@ def main():
     temp_files_dir = os.path.join(output_base_dir, "temp_files")
     # Directory for final editor output video
     final_video_dir = os.path.join(output_base_dir, "final_video")
+    # Directory for voice-over audio files
+    voiceover_dir = os.path.join(output_base_dir, "voiceovers")
     
     try:
         os.makedirs(generated_clips_dir, exist_ok=True)
         os.makedirs(temp_files_dir, exist_ok=True)
         os.makedirs(final_video_dir, exist_ok=True)
+        os.makedirs(voiceover_dir, exist_ok=True)
         print(f"Created directory structure in: {output_base_dir}")
     except OSError as e:
         print(f"Error creating directories: {e}")
@@ -95,50 +100,50 @@ def main():
     
     print(f"\nSuccessfully generated {len(generated_clips_paths)} animation clips in '{generated_clips_dir}'")
     
-    # --- Stage 2: Simple Video Concatenation ---
-    print("\n" + "="*20 + " Stage 2: Creating Final Video " + "="*20)
+    # --- Stage 2: Voice-over Generation ---
+    print("\n" + "="*20 + " Stage 2: Generating Voice-over " + "="*20)
     
-    # Define final video output path
-    output_video_name = f"swimsuit_around_world_{timestamp}"
-    final_output_file = os.path.join(final_video_dir, f"{output_video_name}.mp4")
+    # Example: Generate voice-over for video #1 with countries from the first animation
+    # In a real implementation, you would extract country names from your prompts or data
+    video_number = 1
+    country1 = "Japan"  # Example country, replace with actual country from your data
+    country2 = "France"  # Example country, replace with actual country from your data
     
-    # Create a file list for FFmpeg concatenation
-    file_list_path = os.path.join(temp_files_dir, "file_list.txt")
-    with open(file_list_path, "w") as f:
-        for clip_path in generated_clips_paths:
-            f.write(f"file '{clip_path}'\n")
+    print(f"Generating voice-over for Video #{video_number}...")
+    voiceover_path = generate_voiceover_for_video(
+        video_number=video_number,
+        country1=country1,
+        country2=country2,
+        output_dir=voiceover_dir
+    )
+    print(f"Voice-over generated and saved to: {voiceover_path}")
     
-    # Build the FFmpeg command for simple concatenation
-    cmd = [
-        "ffmpeg", "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", file_list_path,
-        "-c", "copy",
-        final_output_file
-    ]
+    # --- Stage 3: Video Editing ---
+    print("\n" + "="*20 + " Stage 3: Video Editing " + "="*20)
     
-    print("\nExecuting FFmpeg for simple concatenation:")
-    print(" ".join(cmd))
+    # Optional: Path to background music
+    background_music_path = os.path.join("music", "background_music.mp3")  # Adjust path as needed
     
-    try:
-        # Run the FFmpeg command
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        print("\n" + "=" * 60 + "\n Workflow Completed Successfully\n" + "=" * 60)
-        print(f" Final video saved to: {final_output_file}")
-        print("\nOutput from FFmpeg:")
-        print(result.stdout)
-    except subprocess.CalledProcessError as e:
-        print("\n" + "!" * 60 + "\n Error During Video Concatenation\n" + "!" * 60, file=sys.stderr)
-        print(f" Error Type: {type(e).__name__}", file=sys.stderr)
-        print(f" Error Message: {str(e)}", file=sys.stderr)
-        print(" Output:", e.stdout)
-        print(" Error:", e.stderr)
-        sys.exit(1)
+    # Create final video with voice-over
+    print("Creating final video with voice-over...")
+    final_video_path = create_final_video(
+        video_clips_dir=generated_clips_dir,
+        voiceover_path=voiceover_path,
+        output_dir=final_video_dir,
+        background_music_path=background_music_path if os.path.exists(background_music_path) else None,
+        music_volume=0.1  # Adjust volume as needed
+    )
     
-    print(f"\nTemporary files kept in: {temp_files_dir}")
-    print(f"Generated clips kept in: {generated_clips_dir}")
-    print(f"Final video saved in: {final_video_dir}")
+    if final_video_path:
+        print(f"Final video created successfully: {final_video_path}")
+    else:
+        print("Failed to create final video.")
+    
+    print("\nWorkflow completed successfully!")
+    print(f"Output directory: {output_base_dir}")
+    print(f"Generated clips: {generated_clips_dir}")
+    print(f"Voice-over: {voiceover_path}")
+    print(f"Final video: {final_video_path}")
 
 if __name__ == "__main__":
     main() 
