@@ -9,8 +9,8 @@ from runwayml import RunwayML
 from enum import Enum
 import sys # For exiting early
 import random # For random seeds
-from animation_prompts import ANIMATION_PROMPTS
-from base_image_prompts import BASE_IMAGE_PROMPT, BASE_IMAGE_NEGATIVE_PROMPT
+from Generation.animation_prompts import ANIMATION_PROMPTS
+from Generation.base_image_prompts import BASE_IMAGE_PROMPTS, BASE_IMAGE_NEGATIVE_PROMPT
 
 class TaskStatus(Enum):
     PENDING = "PENDING"
@@ -98,11 +98,19 @@ def encode_image_base64(image_path):
     with open(image_path, 'rb') as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
-def generate_base_image_tensorart(output_directory):
-    """Generates the base image using TensorArt Workflow API (async)."""
+def generate_base_image_tensorart(output_directory, prompt_id=None, prompt_text=None):
+    """Generates a base image using TensorArt Workflow API (async)."""
     print("\n--- Starting Base Image Generation (TensorArt) ---")
     if not TENSORART_BEARER_TOKEN: return None, None
-
+    
+    # Use the provided prompt or default to the first one
+    if prompt_id is None or prompt_text is None:
+        prompt = BASE_IMAGE_PROMPTS[0]
+        prompt_id = prompt["id"]
+        prompt_text = prompt["text"]
+    
+    print(f"Generating base image for: {prompt_id}")
+    
     request_id = str(uuid.uuid4())
     headers = {
         "Authorization": f"Bearer {TENSORART_BEARER_TOKEN}",
@@ -125,7 +133,7 @@ def generate_base_image_tensorart(output_directory):
                     "width": BASE_IMAGE_WIDTH,
                     "height": BASE_IMAGE_HEIGHT,
                     "prompts": [
-                        {"text": BASE_IMAGE_PROMPT, "weight": 1.0},
+                        {"text": prompt_text, "weight": 1.0},
                         {"text": BASE_IMAGE_NEGATIVE_PROMPT, "weight": -1.0}
                     ],
                     "sampler": BASE_IMAGE_SAMPLER,
@@ -334,72 +342,113 @@ def generate_animation_runway(base_image_path, animation_prompt_text, output_dir
         # Encode the image as base64
         image_base64 = encode_image_base64(base_image_path)
         
-        # Create the task
-        task_response = client.image_to_video.create(
-            model=ANIMATION_MODEL,
-            prompt_image=f"data:image/png;base64,{image_base64}",  # Pass as base64 data URL
-            prompt_text=animation_prompt_text,
-            duration=ANIMATION_DURATION,
-            ratio=ANIMATION_RATIO,
-            seed=seed,
-            watermark=False
-        )
+        # Create the task with retry logic for rate limits
+        max_retries = 5
+        base_delay = 60  # Start with 1 minute delay
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                # Create the task
+                task_response = client.image_to_video.create(
+                    model=ANIMATION_MODEL,
+                    prompt_image=f"data:image/png;base64,{image_base64}",  # Pass as base64 data URL
+                    prompt_text=animation_prompt_text,
+                    duration=ANIMATION_DURATION,
+                    ratio=ANIMATION_RATIO,
+                    seed=seed,
+                    watermark=False
+                )
+                break  # If successful, break the retry loop
+                
+            except Exception as e:
+                if hasattr(e, 'response') and e.response and e.response.status_code == 429:
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        print("Error: Maximum retries reached for rate limit. Please try again tomorrow.")
+                        return None
+                    
+                    # Calculate exponential backoff delay
+                    delay = base_delay * (2 ** (retry_count - 1))
+                    print(f"Rate limit reached. Waiting {delay} seconds before retry {retry_count}/{max_retries}...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    # If it's not a rate limit error, re-raise
+                    raise
         
         # Get the task ID from the response
         task_id = task_response.id
         print(f"Runway task submitted. ID: {task_id}")
 
         # Poll for completion with retry logic
-        max_retries = 30  # Maximum number of retries
-        retry_count = 0
-        retry_delay = 10  # Seconds to wait between retries
+        max_poll_retries = 30  # Maximum number of retries
+        poll_retry_count = 0
+        poll_retry_delay = 10
         
-        while retry_count < max_retries:
-            # Get the current task status
-            task = client.tasks.retrieve(task_id)
-            status = task.status
-            print(f"Polling Runway task {task_id}... Current status: {status}")
+        while poll_retry_count < max_poll_retries:
+            try:
+                # Get the current task status
+                task = client.tasks.retrieve(task_id)
+                status = task.status
+                print(f"Polling Runway task {task_id}... Current status: {status}")
 
-            if status in ["COMPLETED", "SUCCEEDED"]:
-                print(f"Runway task {task_id} {status} successfully.")
-                if hasattr(task, 'output') and task.output and len(task.output) > 0:
-                    video_url = task.output[0]
-                    print(f"Generated video URL: {video_url}")
-                    video_filename = f"{output_filename_base}_seed{seed}.mp4"
-                    video_path = os.path.join(output_directory, video_filename)
-                    download_result = download_file(video_url, video_path)
-                    if download_result:
-                        print(f"Animation clip saved: {video_path}")
-                        return video_path
+                if status in ["COMPLETED", "SUCCEEDED"]:
+                    print(f"Runway task {task_id} {status} successfully.")
+                    if hasattr(task, 'output') and task.output and len(task.output) > 0:
+                        video_url = task.output[0]
+                        print(f"Generated video URL: {video_url}")
+                        video_filename = f"{output_filename_base}_seed{seed}.mp4"
+                        video_path = os.path.join(output_directory, video_filename)
+                        download_result = download_file(video_url, video_path)
+                        if download_result:
+                            print(f"Animation clip saved: {video_path}")
+                            return video_path
+                        else:
+                            print("Failed to download animation video.")
+                            return None
                     else:
-                        print("Failed to download animation video.")
+                        print("Error: No output URL found in completed task.")
+                        print("Task data:", task)
                         return None
-                else:
-                    print("Error: No output URL found in completed task.")
-                    print("Task data:", task)
+                elif status == "FAILED":
+                    print(f"Error: Runway task {task_id} FAILED.")
+                    error = getattr(task, 'error', 'No error details available')
+                    print(f"Error details: {error}")
                     return None
-            elif status == "FAILED":
-                print(f"Error: Runway task {task_id} FAILED.")
-                error = getattr(task, 'error', 'No error details available')
-                print(f"Error details: {error}")
-                return None
-            elif status in ["PROCESSING", "QUEUED", "PENDING", "RUNNING"]:
-                print("Task still processing...")
-                time.sleep(retry_delay)
-                retry_count += 1
-                continue
-            elif status == "THROTTLED":
-                print("Task throttled due to rate limiting. Waiting longer before retry...")
-                time.sleep(retry_delay * 2)  # Wait longer when throttled
-                retry_count += 1
-                continue
-            else:
-                print(f"Warning: Unknown task status: {status}. Will retry...")
-                time.sleep(retry_delay)
-                retry_count += 1
-                continue
+                elif status in ["PROCESSING", "QUEUED", "PENDING", "RUNNING"]:
+                    print("Task still processing...")
+                    time.sleep(poll_retry_delay)
+                    poll_retry_count += 1
+                    continue
+                elif status == "THROTTLED":
+                    print("Task throttled due to rate limiting. Waiting longer before retry...")
+                    time.sleep(poll_retry_delay * 2)  # Wait longer when throttled
+                    poll_retry_count += 1
+                    continue
+                else:
+                    print(f"Warning: Unknown task status: {status}. Will retry...")
+                    time.sleep(poll_retry_delay)
+                    poll_retry_count += 1
+                    continue
+                    
+            except Exception as e:
+                if hasattr(e, 'response') and e.response and e.response.status_code == 429:
+                    poll_retry_count += 1
+                    if poll_retry_count >= max_poll_retries:
+                        print("Error: Maximum retries reached for rate limit during polling. Please try again tomorrow.")
+                        return None
+                    
+                    # Calculate exponential backoff delay for polling
+                    delay = poll_retry_delay * (2 ** (poll_retry_count - 1))
+                    print(f"Rate limit reached during polling. Waiting {delay} seconds before retry {poll_retry_count}/{max_poll_retries}...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    # If it's not a rate limit error, re-raise
+                    raise
 
-        print(f"Error: Task did not complete after {max_retries} retries.")
+        print(f"Error: Task did not complete after {max_poll_retries} retries.")
         return None
 
     except Exception as e:
@@ -478,6 +527,33 @@ def main():
         print("No animation clips were successfully generated.")
         if base_image_local_path:
              print("Only the base image was generated.")
+
+def generate_all_base_images(output_directory):
+    """Generates all base images for the different countries."""
+    print("\n--- Generating All Base Images ---")
+    base_images = []
+    
+    for prompt in BASE_IMAGE_PROMPTS:
+        prompt_id = prompt["id"]
+        prompt_text = prompt["text"]
+        
+        print(f"\nGenerating base image for: {prompt_id}")
+        base_image_path, _ = generate_base_image_tensorart(
+            output_directory=output_directory,
+            prompt_id=prompt_id,
+            prompt_text=prompt_text
+        )
+        
+        if base_image_path:
+            base_images.append({
+                "id": prompt_id,
+                "path": base_image_path
+            })
+            print(f"Base image for {prompt_id} saved to: {base_image_path}")
+        else:
+            print(f"Failed to generate base image for: {prompt_id}")
+    
+    return base_images
 
 # Remove or comment out the main execution block if it's only used for imports
 # if __name__ == "__main__":
