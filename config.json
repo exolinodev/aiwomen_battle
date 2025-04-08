@@ -1,0 +1,17 @@
+{
+    "japan": {
+        "voice_over_text": "What country do you like most? Let me show you Japan first."
+    },
+    "france": {
+        "voice_over_text": "Or France?"
+    },
+    "italy": {
+        "voice_over_text": "Maybe Italy?"
+    },
+    "spain": {
+        "voice_over_text": "Or Spain?"
+    },
+    "germany": {
+        "voice_over_text": "And Germany?"
+    }
+} 

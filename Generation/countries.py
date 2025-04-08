@@ -23,11 +23,17 @@ def format_prompt(template, country_data):
 # Load countries and generate prompts
 COUNTRIES = {}
 for country_key, country_data in load_countries().items():
-    COUNTRIES[country_key] = {
-        **country_data,  # Include all original country data
-        'base_image_prompt': format_prompt(BASE_IMAGE_TEMPLATE, country_data),
-        'animation_prompt': format_prompt(ANIMATION_TEMPLATE, country_data)
-    }
+    # Create a copy of the country data
+    country_config = {**country_data}
+    
+    # Only use templates if the fields don't already exist in the config
+    if 'base_image_prompt' not in country_data:
+        country_config['base_image_prompt'] = format_prompt(BASE_IMAGE_TEMPLATE, country_data)
+    
+    if 'animation_prompt' not in country_data:
+        country_config['animation_prompt'] = format_prompt(ANIMATION_TEMPLATE, country_data)
+    
+    COUNTRIES[country_key] = country_config
 
 # Common negative prompts
 BASE_IMAGE_NEGATIVE_PROMPT = NEGATIVE_PROMPT

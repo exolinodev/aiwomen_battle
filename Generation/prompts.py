@@ -16,7 +16,7 @@ BASE_IMAGE_TEMPLATE = (
 
 # Template for generating animations
 ANIMATION_TEMPLATE = (
-    "Create a dynamic and cinematic animation of an athlete in motion. The athlete is wearing {colors} colors representing {name}. {flag_description} The movement should be smooth and fluid, with a gentle camera motion that follows the athlete's graceful movements. The lighting should be dramatic and cinematic, enhancing the sense of motion and energy. The background should subtly incorporate elements of {name}'s national identity while maintaining focus on the athlete's movement."
+    "Create a dynamic and cinematic animation of an athlete in motion. The movement should be smooth and fluid, with a gentle camera motion that follows the athlete's graceful movements. The lighting should be dramatic and cinematic, enhancing the sense of motion and energy. The background should subtly incorporate elements of {name}'s national identity while maintaining focus on the athlete's movement."
 )
 
 # Common negative prompt for both base images and animations

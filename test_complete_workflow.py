@@ -118,54 +118,34 @@ def test_complete_workflow():
         set_api_key(api_key)
         print("Successfully connected to ElevenLabs API")
         
-        # Generate voice-overs for both clips
+        # Generate voice-overs for all clips
         voiceover_paths = []
-        video_number = 1
         
-        # First voice-over: Intro with question and first country
-        print("Generating voice-over for first clip (Intro)...")
-        first_country = list(COUNTRIES.values())[0]
-        script1 = (
-            f"Video #{video_number}. What country do you like most? "
-            f"Let me show you {first_country['name']} first."
-        )
-        
-        print(f"Script 1: {script1}")
-        
-        # Generate audio for first clip
-        print("Generating audio for first clip...")
-        audio1 = generate(
-            text=script1,
-            voice="Bella",
-            model="eleven_multilingual_v2"
-        )
-        
-        # Save the audio to a file
-        voiceover_path1 = os.path.join(voiceover_dir, f"voiceover_{first_country['id']}.mp3")
-        save(audio1, voiceover_path1)
-        voiceover_paths.append(voiceover_path1)
-        print(f"Voice-over for first clip saved to: {voiceover_path1}")
-        
-        # Second voice-over: Second country introduction
-        print("Generating voice-over for second clip (Country name)...")
-        second_country = list(COUNTRIES.values())[1]
-        script2 = f"And now, {second_country['name']}."
-        
-        print(f"Script 2: {script2}")
-        
-        # Generate audio for second clip
-        print("Generating audio for second clip...")
-        audio2 = generate(
-            text=script2,
-            voice="Bella",
-            model="eleven_multilingual_v2"
-        )
-        
-        # Save the audio to a file
-        voiceover_path2 = os.path.join(voiceover_dir, f"voiceover_{second_country['id']}.mp3")
-        save(audio2, voiceover_path2)
-        voiceover_paths.append(voiceover_path2)
-        print(f"Voice-over for second clip saved to: {voiceover_path2}")
+        # Process each country
+        for country in COUNTRIES.values():
+            print(f"Generating voice-over for {country['name']}...")
+            
+            # Determine which script to use (intro or transition)
+            if country['intro_voiceover'] is not None:
+                script = country['intro_voiceover']
+            else:
+                script = country['transition_voiceover']
+            
+            print(f"Script for {country['name']}: {script}")
+            
+            # Generate audio
+            print(f"Generating audio for {country['name']}...")
+            audio = generate(
+                text=script,
+                voice="Bella",
+                model="eleven_multilingual_v2"
+            )
+            
+            # Save the audio to a file
+            voiceover_path = os.path.join(voiceover_dir, f"voiceover_{country['id']}.mp3")
+            save(audio, voiceover_path)
+            voiceover_paths.append(voiceover_path)
+            print(f"Voice-over for {country['name']} saved to: {voiceover_path}")
         
         # --- Stage 4: Video Editing ---
         print("\n" + "="*20 + " Stage 4: Creating Final Video " + "="*20)

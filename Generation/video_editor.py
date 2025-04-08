@@ -7,75 +7,74 @@ def combine_video_with_voiceover(
     voiceover_path,
     output_path,
     background_music_path=None,
-    music_volume=0.1
+    is_first_clip=False
 ):
     """
     Combine a video with a voice-over and optional background music.
+    For the first clip, allows the complete voice-over to play while keeping video at 3 seconds.
+    For other clips, limits both video and voice-over to 3 seconds.
     
     Args:
         video_path (str): Path to the video file
         voiceover_path (str): Path to the voice-over audio file
         output_path (str): Path to save the final video
         background_music_path (str, optional): Path to background music file
-        music_volume (float, optional): Volume of background music (0.0 to 1.0)
+        is_first_clip (bool): Whether this is the first clip (Japan)
         
     Returns:
         bool: True if successful, False otherwise
     """
     try:
-        # Base command with video and voice-over
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", video_path,
-            "-i", voiceover_path
+        # First, trim the video to 3 seconds
+        temp_video = output_path.replace('.mp4', '_temp.mp4')
+        trim_cmd = [
+            'ffmpeg', '-y',
+            '-i', video_path,
+            '-t', '3',  # Limit to 3 seconds
+            '-c:v', 'copy',
+            temp_video
         ]
-        
-        # Add background music if provided
-        if background_music_path and os.path.exists(background_music_path):
-            cmd.extend(["-i", background_music_path])
-            
-            # Complex filter for mixing audio streams
-            filter_complex = (
-                f"[1:a]volume=1[a1];"  # Voice-over at full volume
-                f"[2:a]volume={music_volume}[a2];"  # Background music at reduced volume
-                f"[a1][a2]amix=inputs=2:duration=first[a]"  # Mix the two audio streams
-            )
-            
-            cmd.extend([
-                "-filter_complex", filter_complex,
-                "-map", "0:v",  # Video from first input
-                "-map", "[a]"   # Mixed audio
-            ])
+        subprocess.run(trim_cmd, check=True)
+
+        # For the first clip, we want to keep the complete voice-over
+        if is_first_clip:
+            cmd = [
+                'ffmpeg', '-y',
+                '-i', temp_video,
+                '-i', voiceover_path,
+                '-filter_complex', '[1:a]apad=whole_dur=3[a1]',  # Pad audio to match video duration
+                '-c:v', 'copy',
+                '-c:a', 'aac',
+                '-map', '0:v',
+                '-map', '[a1]',
+                output_path
+            ]
         else:
-            # Simple audio replacement if no background music
-            cmd.extend([
-                "-map", "0:v",  # Video from first input
-                "-map", "1:a"   # Audio from second input (voice-over)
-            ])
+            # For other clips, limit both video and voice-over to 3 seconds
+            cmd = [
+                'ffmpeg', '-y',
+                '-i', temp_video,
+                '-i', voiceover_path,
+                '-filter_complex', '[1:a]apad=whole_dur=3[a1]',  # Pad audio to match video duration
+                '-c:v', 'copy',
+                '-c:a', 'aac',
+                '-map', '0:v',
+                '-map', '[a1]',
+                '-shortest',  # Ensure output duration matches shortest input
+                output_path
+            ]
+
+        subprocess.run(cmd, check=True)
         
-        # Output options
-        cmd.extend([
-            "-c:v", "copy",     # Copy video codec (no re-encoding)
-            "-c:a", "aac",      # Use AAC for audio
-            "-shortest",        # End when shortest input ends
-            output_path
-        ])
-        
-        # Execute the command
-        print(f"Executing FFmpeg command: {' '.join(cmd)}")
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        print("FFmpeg output:")
-        print(result.stdout)
-        
+        # Clean up temporary file
+        if os.path.exists(temp_video):
+            os.remove(temp_video)
+            
         return True
-    
     except subprocess.CalledProcessError as e:
-        print(f"Error during video editing: {e}", file=sys.stderr)
-        print(f"FFmpeg output: {e.stdout}", file=sys.stderr)
-        print(f"FFmpeg error: {e.stderr}", file=sys.stderr)
-        return False
-    except Exception as e:
-        print(f"Unexpected error: {e}", file=sys.stderr)
+        print(f"Error during video editing: {e}")
+        if hasattr(e, 'output'):
+            print(f"FFmpeg output: {e.output.decode()}")
         return False
 
 def create_final_video(
@@ -140,8 +139,7 @@ def create_final_video(
             video_path=temp_video_path,
             voiceover_path=voiceover_path,
             output_path=final_video_path,
-            background_music_path=background_music_path,
-            music_volume=music_volume
+            background_music_path=background_music_path
         )
         
         # Clean up temporary files
@@ -158,3 +156,31 @@ def create_final_video(
     except Exception as e:
         print(f"Error creating final video: {e}", file=sys.stderr)
         return None 
+
+def concatenate_videos(concat_list_path, output_path, working_dir):
+    """Concatenate multiple videos into a single video with transitions."""
+    try:
+        # Build the ffmpeg command
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", concat_list_path,
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            "-preset", "medium",
+            "-crf", "23",
+            output_path
+        ]
+
+        # Execute the command
+        subprocess.run(cmd, check=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"Error during video concatenation: {e}")
+        if hasattr(e, 'output'):
+            print(f"FFmpeg output: {e.output.decode()}")
+        return False
+    except Exception as e:
+        print(f"Unexpected error during video concatenation: {e}")
+        return False 

@@ -1,14 +1,52 @@
 {
-    "japan": {
-        "id": "01_japan",
-        "name": "Japan",
-        "colors": "red and white",
-        "flag_description": "Japanese flag"
+    "brazil": {
+        "id": "01",
+        "name": "Brazil",
+        "colors": "green, yellow, and blue",
+        "flag_description": "Brazilian flag",
+        "base_image_prompt": "A beautiful Brazilian woman in a green, yellow, and blue bikini inspired by the Brazilian flag, standing in front of Christ the Redeemer statue, hyperrealistic photography, photorealistic, 8k resolution, high quality, tropical lighting",
+        "animation_prompt": "Create a dynamic and cinematic animation of a Brazilian athlete in motion. The athlete is wearing green, yellow, and blue colors representing Brazil. Brazilian flag. The movement should be smooth and fluid, with a gentle camera motion that follows the athlete's graceful movements. The lighting should be dramatic and cinematic, enhancing the sense of motion and energy. The background should subtly incorporate elements of Brazil's national identity while maintaining focus on the athlete's movement.",
+        "intro_voiceover": "Video #1. What country do you like most? Let me show you Brazil first.",
+        "transition_voiceover": "And now, Brazil."
     },
-    "france": {
-        "id": "02_france",
-        "name": "France",
-        "colors": "blue, white, and red",
-        "flag_description": "French flag"
+    "switzerland": {
+        "id": "02",
+        "name": "Switzerland",
+        "colors": "red and white",
+        "flag_description": "Swiss flag",
+        "base_image_prompt": "A beautiful Swiss woman in a red and white bikini inspired by the Swiss flag, standing in front of the Swiss Alps, hyperrealistic photography, photorealistic, 8k resolution, high quality, alpine lighting",
+        "animation_prompt": "Create a dynamic and cinematic animation of a Swiss athlete in motion. The athlete is wearing red and white colors representing Switzerland. Swiss flag. The movement should be smooth and fluid, with a gentle camera motion that follows the athlete's graceful movements. The lighting should be dramatic and cinematic, enhancing the sense of motion and energy. The background should subtly incorporate elements of Switzerland's national identity while maintaining focus on the athlete's movement.",
+        "intro_voiceover": null,
+        "transition_voiceover": "And now, Switzerland?"
+    },
+    "nigeria": {
+        "id": "03",
+        "name": "Nigeria",
+        "colors": "green and white",
+        "flag_description": "Nigerian flag",
+        "base_image_prompt": "A beautiful Nigerian woman in a green and white bikini matching the Nigerian flag colors, standing in front of Zuma Rock, hyperrealistic photography, photorealistic, 8k resolution, high quality, vibrant African lighting",
+        "animation_prompt": "Create a dynamic and cinematic animation of a Nigerian athlete in motion. The athlete is wearing green and white colors representing Nigeria. Nigerian flag. The movement should be smooth and fluid, with a gentle camera motion that follows the athlete's graceful movements. The lighting should be dramatic and cinematic, enhancing the sense of motion and energy. The background should subtly incorporate elements of Nigeria's national identity while maintaining focus on the athlete's movement.",
+        "intro_voiceover": null,
+        "transition_voiceover": "Maybe, Nigeria?"
+    },
+    "usa": {
+        "id": "04",
+        "name": "USA",
+        "colors": "red, white, and blue",
+        "flag_description": "American flag",
+        "base_image_prompt": "A beautiful American woman in a red, white, and blue bikini inspired by the American flag, standing in front of the Statue of Liberty, hyperrealistic photography, photorealistic, 8k resolution, high quality, dramatic lighting",
+        "animation_prompt": "Create a dynamic and cinematic animation of an American athlete in motion. The athlete is wearing red, white, and blue colors representing the USA. American flag. The movement should be smooth and fluid, with a gentle camera motion that follows the athlete's graceful movements. The lighting should be dramatic and cinematic, enhancing the sense of motion and energy. The background should subtly incorporate elements of America's national identity while maintaining focus on the athlete's movement.",
+        "intro_voiceover": null,
+        "transition_voiceover": "What about USA?"
+    },
+    "thailand": {
+        "id": "05",
+        "name": "Thailand",
+        "colors": "red, white, and blue",
+        "flag_description": "Thai flag",
+        "base_image_prompt": "A beautiful Thai woman in a red, white, and blue bikini with design elements inspired by the Thai flag, standing in front of the Grand Palace in Bangkok, hyperrealistic photography, photorealistic, 8k resolution, high quality, tropical sunset lighting",
+        "animation_prompt": "Create a dynamic and cinematic animation of a Thai athlete in motion. The athlete is wearing red, white, and blue colors representing Thailand. Thai flag. The movement should be smooth and fluid, with a gentle camera motion that follows the athlete's graceful movements. The lighting should be dramatic and cinematic, enhancing the sense of motion and energy. The background should subtly incorporate elements of Thailand's national identity while maintaining focus on the athlete's movement.",
+        "intro_voiceover": null,
+        "transition_voiceover": "Next up, Thailand."
     }
-} 
+}
