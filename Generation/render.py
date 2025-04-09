@@ -1,557 +1,607 @@
+"""
+Image and animation generation module.
+
+This module provides functions for generating base images using TensorArt API
+and creating animations using RunwayML API. It includes utilities for API
+interaction, file operations, and workflow management.
+"""
+
 import os
 import requests
 import json
 import time
 import uuid
 import base64
-from dotenv import load_dotenv
+import logging
+from typing import Dict, Any, List, Optional, Union, Tuple
+from pathlib import Path
 from runwayml import RunwayML
 from enum import Enum
-import sys # For exiting early
-import random # For random seeds
+import sys
+import random
+
 from Generation.countries import COUNTRIES, BASE_IMAGE_NEGATIVE_PROMPT, ANIMATION_NEGATIVE_PROMPT
+from watw.utils.common.exceptions import (
+    ConfigurationError,
+    APIError,
+    TensorArtError,
+    RunwayMLError,
+    FileOperationError,
+    WorkflowError,
+    ValidationError
+)
+from watw.utils.common.credentials import credentials
+from watw.utils.common.rate_limiter import (
+    with_retry,
+    RetryConfig,
+    RateLimitExceeded,
+    handle_rate_limit,
+    extract_retry_after
+)
+from watw.utils.common.api_validator import (
+    validate_tensorart_job_response,
+    validate_tensorart_job_status_response,
+    validate_runway_task_response,
+    validate_runway_task_status_response,
+    ValidationError
+)
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# --- Constants and Configuration ---
 
 class TaskStatus(Enum):
+    """Enumeration of possible task statuses."""
     PENDING = "PENDING"
     PROCESSING = "PROCESSING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
 
-# --- Configuration ---
-load_dotenv()  # Load environment variables from .env file
+# API Endpoints
+TENSORART_API_BASE_URL = "https://api.tensorart.ai"
+RUNWAYML_API_BASE_URL = "https://api.runwayml.com"
 
-TENSORART_BEARER_TOKEN = os.getenv("TENSORART_BEARER_TOKEN")
-RUNWAYML_API_SECRET = os.getenv("RUNWAYML_API_SECRET")
+# Base Image Generation Parameters (TensorArt)
+BASE_IMAGE_CONFIG = {
+    'width': 768,
+    'height': 1280,
+    'steps': 30,
+    'cfg_scale': 7,
+    'sampler': "Euler",
+    'model_id': "757279507095956705",
+    'seed': -1,
+    'count': 1
+}
 
-# Endpoint based on TAMS documentation examples
-TENSORART_API_BASE_URL = "https://ap-east-1.tensorart.cloud"
-TENSORART_SUBMIT_JOB_ENDPOINT = f"{TENSORART_API_BASE_URL}/v1/jobs"
+# Animation Parameters (RunwayML)
+ANIMATION_CONFIG = {
+    'model': "gen3a_turbo",
+    'duration': 5,
+    'ratio': "768:1280",
+    'seed_start': random.randint(1, 1000000)
+}
 
-# !!! IMPORTANT: VERIFY THIS POLLING ENDPOINT AND RESPONSE STRUCTURE !!!
-# This is a placeholder assumption based on common patterns.
-# You MUST find the correct endpoint in TensorArt's documentation.
-def get_tensorart_job_status_endpoint(job_id):
-    return f"{TENSORART_API_BASE_URL}/v1/jobs/{job_id}"
+# Retry Configurations
+TENSORART_RETRY_CONFIG = RetryConfig(
+    max_retries=5,
+    base_delay=30.0,
+    max_delay=300.0,
+    jitter=True,
+    exponential_backoff=True
+)
 
-RUNWAYML_API_BASE_URL = "https://api.runwayml.com" # Correct base for Runway
+RUNWAYML_RETRY_CONFIG = RetryConfig(
+    max_retries=5,
+    base_delay=60.0,
+    max_delay=300.0,
+    jitter=True,
+    exponential_backoff=True
+)
 
-# Remove the hardcoded OUTPUT_FOLDER
-# OUTPUT_FOLDER = "output_gym_short_v2"
-# os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+# --- Credential Management ---
 
-# --- Base Image Generation Parameters (TensorArt) ---
-# Base image prompts are now imported from base_image_prompts.py
-BASE_IMAGE_WIDTH = 768 # Choose dimensions suitable for 9:16 animation later
-BASE_IMAGE_HEIGHT = 1280
-BASE_IMAGE_STEPS = 30
-BASE_IMAGE_CFG_SCALE = 7
-BASE_IMAGE_SAMPLER = "Euler"
-# !! IMPORTANT: Replace with the actual Model ID from TensorArt !!
-BASE_IMAGE_MODEL_ID = "757279507095956705" # Your provided model ID
-BASE_IMAGE_SEED = -1 # -1 for random
-BASE_IMAGE_COUNT = 1 # Generate 1 base image
-
-# --- Animation Parameters (RunwayML Gen-3 Turbo) ---
-ANIMATION_MODEL = "gen3a_turbo"  # Correct model name
-ANIMATION_DURATION = 5  # Must be either 5 or 10 seconds
-ANIMATION_RATIO = "768:1280"  # Must be either 768:1280 or 1280:768
-ANIMATION_SEED_START = random.randint(1, 1000000)  # Random seed for variety
-
-# Animation prompts are now imported from animation_prompts.py
-
-# --- Helper Functions ---
-
-def check_credentials():
-    """Checks if API credentials are loaded."""
-    if not TENSORART_BEARER_TOKEN:
-        print("\nERROR: TENSORART_BEARER_TOKEN not found.")
-        print("Please get your token from TAMS platform and set it in the .env file.")
-        return False
-    if not RUNWAYML_API_SECRET:
-        print("\nError: RUNWAYML_API_SECRET not found.")
-        print("Please set it in the .env file.")
-        return False
-    print("API credentials loaded successfully.")
-    return True
-
-def download_file(url, save_path):
-    """Downloads a file from a URL to a specified path."""
+def check_credentials() -> bool:
+    """
+    Check if required API credentials are available.
+    
+    Returns:
+        bool: True if credentials are available
+        
+    Raises:
+        ConfigurationError: If required credentials are missing
+    """
     try:
-        print(f"Downloading from {url} to {save_path}...")
-        response = requests.get(url, stream=True, timeout=180) # Longer timeout for potentially large files
+        credentials.get_tensorart_token()
+        credentials.get_runwayml_secret()
+        logger.info("API credentials loaded successfully")
+        return True
+    except ConfigurationError as e:
+        logger.error(f"Credential error: {str(e)}")
+        raise
+
+# --- File Operations ---
+
+@with_retry(config=RetryConfig(max_retries=3, base_delay=5.0))
+def download_file(url: str, save_path: Union[str, Path]) -> Path:
+    """
+    Download a file from a URL.
+    
+    Args:
+        url: Source URL
+        save_path: Destination path
+        
+    Returns:
+        Path: Path to downloaded file
+        
+    Raises:
+        FileOperationError: If download fails
+    """
+    save_path = Path(save_path)
+    
+    try:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Downloading from {url} to {save_path}...")
+        
+        response = requests.get(url, stream=True, timeout=180)
         response.raise_for_status()
+        
         with open(save_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
-        print(f"Successfully downloaded {save_path}")
-        return save_path  # Return the path on success
+                
+        logger.info(f"Successfully downloaded {save_path}")
+        return save_path
+        
     except requests.exceptions.RequestException as e:
-        print(f"Error downloading file from {url}: {e}")
-        return None
+        raise FileOperationError(f"Failed to download file from {url}: {str(e)}")
     except Exception as e:
-        print(f"An unexpected error occurred during download: {e}")
-        return None
+        raise FileOperationError(f"Unexpected error downloading file: {str(e)}")
 
-def encode_image_base64(image_path):
-    """Encode an image file to base64."""
+def encode_image_base64(image_path: Union[str, Path]) -> str:
+    """
+    Encode an image file to base64.
+    
+    Args:
+        image_path: Path to image file
+        
+    Returns:
+        str: Base64 encoded image
+        
+    Raises:
+        FileOperationError: If encoding fails
+    """
     try:
         from PIL import Image
         import io
         
-        # Open and validate the image
         with Image.open(image_path) as img:
-            # Check dimensions
+            # Validate and resize if needed
             width, height = img.size
-            if width != 768 or height != 1280:
-                print(f"Warning: Image dimensions {width}x{height} do not match required 768x1280")
-                # Resize image to match requirements
-                img = img.resize((768, 1280), Image.Resampling.LANCZOS)
-                print("Image has been resized to 768x1280")
+            if width != BASE_IMAGE_CONFIG['width'] or height != BASE_IMAGE_CONFIG['height']:
+                logger.warning(f"Image dimensions {width}x{height} do not match required {BASE_IMAGE_CONFIG['width']}x{BASE_IMAGE_CONFIG['height']}")
+                img = img.resize((BASE_IMAGE_CONFIG['width'], BASE_IMAGE_CONFIG['height']), Image.Resampling.LANCZOS)
+                logger.info("Image has been resized")
             
-            # Convert to RGB if necessary
             if img.mode != 'RGB':
                 img = img.convert('RGB')
             
-            # Save to bytes
             img_byte_arr = io.BytesIO()
             img.save(img_byte_arr, format='PNG')
             img_byte_arr = img_byte_arr.getvalue()
             
             return base64.b64encode(img_byte_arr).decode('utf-8')
+            
     except Exception as e:
-        print(f"Error processing image: {e}")
-        return None
+        raise FileOperationError(f"Failed to encode image {image_path}: {str(e)}")
 
-def generate_base_image_tensorart(output_directory, prompt_id=None, prompt_text=None):
-    """Generates a base image using TensorArt Workflow API (async)."""
-    print("\n--- Starting Base Image Generation (TensorArt) ---")
-    if not TENSORART_BEARER_TOKEN: return None, None
+# --- TensorArt API Functions ---
+
+def get_tensorart_job_status_endpoint(job_id: str) -> str:
+    """Get the endpoint URL for checking TensorArt job status."""
+    return f"{TENSORART_API_BASE_URL}/v1/jobs/{job_id}"
+
+@with_retry(config=TENSORART_RETRY_CONFIG)
+def submit_tensorart_job(headers: Dict[str, str], payload: Dict[str, Any]) -> str:
+    """
+    Submit a job to TensorArt API.
     
-    # Use the provided prompt or default to the first one
+    Args:
+        headers: Request headers
+        payload: Job parameters
+        
+    Returns:
+        str: Job ID
+        
+    Raises:
+        TensorArtError: If submission fails
+        RateLimitExceeded: If rate limit is exceeded
+        ValidationError: If response validation fails
+    """
+    try:
+        response = requests.post(
+            f"{TENSORART_API_BASE_URL}/v1/jobs",
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+        
+        if response.status_code == 429:
+            handle_rate_limit(response)
+            
+        validation_result = validate_tensorart_job_response(response)
+        if not validation_result.is_valid:
+            error_messages = [str(e) for e in validation_result.errors]
+            raise ValidationError(f"Invalid TensorArt job response: {'; '.join(error_messages)}")
+            
+        return validation_result.value['job']['id']
+        
+    except Exception as e:
+        if hasattr(e, 'response') and e.response and e.response.status_code == 429:
+            retry_after = extract_retry_after(e.response)
+            if retry_after:
+                raise RateLimitExceeded("Rate limit exceeded", retry_after)
+            else:
+                raise RateLimitExceeded("Rate limit exceeded")
+                
+        raise TensorArtError(f"Job submission failed: {str(e)}",
+                           status_code=getattr(e.response, 'status_code', None),
+                           response_data=getattr(e.response, 'json', lambda: None)())
+
+@with_retry(config=RetryConfig(max_retries=10, base_delay=10.0))
+def poll_tensorart_job(headers: Dict[str, str], job_id: str, output_directory: Union[str, Path]) -> Tuple[Optional[Path], Optional[str]]:
+    """
+    Poll TensorArt job until completion.
+    
+    Args:
+        headers: Request headers
+        job_id: Job ID to poll
+        output_directory: Output directory
+        
+    Returns:
+        Tuple[Optional[Path], Optional[str]]: Path to saved image and image URL
+        
+    Raises:
+        TensorArtError: If polling fails
+        RateLimitExceeded: If rate limit is exceeded
+        ValidationError: If response validation fails
+    """
+    polling_endpoint = get_tensorart_job_status_endpoint(job_id)
+    polling_interval = 10
+    max_attempts = 30
+    
+    for attempt in range(max_attempts):
+        try:
+            time.sleep(polling_interval)
+            response = requests.get(polling_endpoint, headers=headers, timeout=30)
+            
+            if response.status_code == 429:
+                handle_rate_limit(response)
+                
+            validation_result = validate_tensorart_job_status_response(response)
+            if not validation_result.is_valid:
+                error_messages = [str(e) for e in validation_result.errors]
+                raise ValidationError(f"Invalid TensorArt job status response: {'; '.join(error_messages)}")
+                
+            job_status_data = validation_result.value
+            status = job_status_data.get('job', {}).get('status', '').upper()
+            
+            if status == TaskStatus.SUCCEEDED.value:
+                image_url = job_status_data.get('job', {}).get('output', {}).get('images', [{}])[0].get('url')
+                if not image_url:
+                    raise TensorArtError("No image URL in successful job response")
+                    
+                output_path = Path(output_directory) / f"base_image_{job_id}.png"
+                downloaded_path = download_file(image_url, output_path)
+                return downloaded_path, image_url
+                
+            elif status == TaskStatus.FAILED.value:
+                error_message = job_status_data.get('job', {}).get('error', 'Unknown error')
+                raise TensorArtError(f"Job failed: {error_message}")
+                
+            logger.info(f"Job status: {status} (attempt {attempt + 1}/{max_attempts})")
+            
+        except Exception as e:
+            if hasattr(e, 'response') and e.response and e.response.status_code == 429:
+                retry_after = extract_retry_after(e.response)
+                if retry_after:
+                    raise RateLimitExceeded("Rate limit exceeded", retry_after)
+                else:
+                    raise RateLimitExceeded("Rate limit exceeded")
+                    
+            logger.warning(f"Polling attempt {attempt + 1} failed: {str(e)}")
+            if attempt == max_attempts - 1:
+                raise TensorArtError(f"Maximum polling retries reached: {str(e)}")
+            continue
+            
+    raise TensorArtError("Job polling timed out")
+
+def generate_base_image_tensorart(
+    output_directory: Union[str, Path],
+    prompt_id: Optional[str] = None,
+    prompt_text: Optional[str] = None
+) -> Tuple[Optional[Path], Optional[str]]:
+    """
+    Generate a base image using TensorArt API.
+    
+    Args:
+        output_directory: Output directory
+        prompt_id: Optional prompt ID
+        prompt_text: Optional prompt text
+        
+    Returns:
+        Tuple[Optional[Path], Optional[str]]: Path to saved image and image URL
+        
+    Raises:
+        TensorArtError: If generation fails
+        ConfigurationError: If credentials are missing
+        FileOperationError: If file operations fail
+    """
+    logger.info("Starting Base Image Generation (TensorArt)")
+    
+    token = credentials.get_tensorart_token()
+    
     if prompt_id is None or prompt_text is None:
         prompt = COUNTRIES[0]["base_image_prompt"]
         prompt_id = COUNTRIES[0]["id"]
         prompt_text = prompt
     
-    print(f"Generating base image for: {prompt_id}")
+    logger.info(f"Generating base image for: {prompt_id}")
     
-    request_id = str(uuid.uuid4())
     headers = {
-        "Authorization": f"Bearer {TENSORART_BEARER_TOKEN}",
-        "Content-Type": "application/json; charset=UTF-8", # As per docs
-        "Accept": "application/json" # Good practice
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json; charset=UTF-8",
+        "Accept": "application/json"
     }
+    
     payload = {
-        "request_id": request_id,
+        "request_id": str(uuid.uuid4()),
         "stages": [
             {
                 "type": "INPUT_INITIALIZE",
                 "inputInitialize": {
-                    "seed": BASE_IMAGE_SEED,
-                    "count": BASE_IMAGE_COUNT
+                    "seed": BASE_IMAGE_CONFIG['seed'],
+                    "count": BASE_IMAGE_CONFIG['count']
                 }
             },
             {
                 "type": "DIFFUSION",
                 "diffusion": {
-                    "width": BASE_IMAGE_WIDTH,
-                    "height": BASE_IMAGE_HEIGHT,
+                    "width": BASE_IMAGE_CONFIG['width'],
+                    "height": BASE_IMAGE_CONFIG['height'],
                     "prompts": [
                         {"text": prompt_text, "weight": 1.0},
                         {"text": BASE_IMAGE_NEGATIVE_PROMPT, "weight": -1.0}
                     ],
-                    "sampler": BASE_IMAGE_SAMPLER,
+                    "sampler": BASE_IMAGE_CONFIG['sampler'],
                     "sdVae": "Automatic",
-                    "steps": BASE_IMAGE_STEPS,
-                    "sd_model": BASE_IMAGE_MODEL_ID,
+                    "steps": BASE_IMAGE_CONFIG['steps'],
+                    "sd_model": BASE_IMAGE_CONFIG['model_id'],
                     "clip_skip": 2,
-                    "cfg_scale": BASE_IMAGE_CFG_SCALE
+                    "cfg_scale": BASE_IMAGE_CONFIG['cfg_scale']
                 }
-            },
-            # Optional: Add UPSCALER or ADETAILER stages here
+            }
         ]
     }
-
-    # 1. Submit the job
+    
     try:
-        print(f"Submitting job to TensorArt: {TENSORART_SUBMIT_JOB_ENDPOINT}")
-        response = requests.post(TENSORART_SUBMIT_JOB_ENDPOINT, headers=headers, json=payload, timeout=60)
-
-        # Print full response for debugging
-        print("\nFull Response:")
-        print(f"Status Code: {response.status_code}")
-        print("Response Headers:", json.dumps(dict(response.headers), indent=2))
-        print("Response Body:", json.dumps(response.json(), indent=2))
-
-        # Check response status for submission
-        if response.status_code == 202: # Accepted for processing (Likely async indicator)
-            print("TensorArt job submitted successfully (Status 202 Accepted).")
-            submit_response_data = response.json()
-            print("Submission Response:", json.dumps(submit_response_data, indent=2))
-
-            # !!! ASSUMPTION: Extract Job ID - VERIFY THIS FIELD NAME !!!
-            job_id = submit_response_data.get('jobId') or submit_response_data.get('id') or submit_response_data.get('task_id')
-            if not job_id:
-                print("Error: Could not find 'jobId' or similar ID in TensorArt submission response.")
-                return None, None
-            print(f"TensorArt Job ID: {job_id}")
-
-        elif response.status_code == 200: # Might be sync success? Less likely based on docs.
-             print("Warning: Received 200 OK on submission, might be synchronous?")
-             submit_response_data = response.json()
-             print("Full 200 OK Response:", json.dumps(submit_response_data, indent=2))
-             
-             # Try to find job ID in various possible locations
-             job_id = (submit_response_data.get('job', {}).get('id') or  # New structure
-                      submit_response_data.get('jobId') or 
-                      submit_response_data.get('id') or 
-                      submit_response_data.get('task_id') or
-                      submit_response_data.get('data', {}).get('jobId') or
-                      submit_response_data.get('data', {}).get('id'))
-             
-             if not job_id:
-                print("Error: Could not find job ID in 200 OK response.")
-                print("Available keys in response:", list(submit_response_data.keys()))
-                if 'data' in submit_response_data:
-                    print("Available keys in data:", list(submit_response_data['data'].keys()))
-                return None, None
-             print(f"TensorArt Job ID (from 200 OK): {job_id}")
-
-        else:
-            print(f"Error submitting TensorArt job. Status: {response.status_code}")
-            try:
-                error_data = response.json()
-                print("Error Response Body:", json.dumps(error_data, indent=2))
-            except json.JSONDecodeError:
-                print("Error Response Body:", response.text)
-            return None, None
-
-    except requests.exceptions.Timeout:
-        print("Error: TensorArt job submission request timed out.")
-        return None, None
-    except requests.exceptions.RequestException as e:
-        print(f"Error during TensorArt job submission: {e}")
-        return None, None
-    except Exception as e:
-        print(f"An unexpected error occurred during TensorArt submission: {e}")
+        job_id = submit_tensorart_job(headers, payload)
+        logger.info(f"TensorArt job submitted successfully. Job ID: {job_id}")
+        return poll_tensorart_job(headers, job_id, output_directory)
+        
+    except TensorArtError as e:
+        logger.error(f"TensorArt operation failed: {str(e)}")
+        if e.status_code:
+            logger.error(f"Status code: {e.status_code}")
+        if e.response_data:
+            logger.error(f"Response data: {json.dumps(e.response_data, indent=2)}")
         return None, None
 
-    # 2. Poll for job completion
-    polling_endpoint = get_tensorart_job_status_endpoint(job_id)
-    print(f"\nPolling TensorArt job status: {polling_endpoint}")
-    print("!!! WARNING: Ensure this polling endpoint is correct! !!!")
+# --- RunwayML API Functions ---
 
-    polling_interval = 10 # seconds
-    max_attempts = 30 # e.g., 30 * 10s = 5 minutes timeout
-    attempts = 0
-
-    while attempts < max_attempts:
-        attempts += 1
-        print(f"Polling attempt {attempts}/{max_attempts}...")
-        try:
-            time.sleep(polling_interval)
-            poll_response = requests.get(polling_endpoint, headers=headers, timeout=30)
-
-            if poll_response.status_code == 200:
-                job_status_data = poll_response.json()
-                # Extract status from the nested structure
-                status = job_status_data.get('job', {}).get('status', 'UNKNOWN').upper()
-                print(f"  Job Status: {status}")
-
-                # Print queue information if available
-                waiting_info = job_status_data.get('job', {}).get('waitingInfo', {})
-                if waiting_info:
-                    queue_rank = waiting_info.get('queueRank', 'unknown')
-                    queue_len = waiting_info.get('queueLen', 'unknown')
-                    print(f"  Queue Position: {queue_rank}/{queue_len}")
-
-                if status in ['SUCCEEDED', 'COMPLETED', 'SUCCESS']: # Added SUCCESS as valid completion status
-                    print("TensorArt job completed successfully.")
-                    # Extract image URL from successInfo structure
-                    try:
-                        success_info = job_status_data.get('job', {}).get('successInfo', {})
-                        images = success_info.get('images', [])
-                        
-                        if images and len(images) > 0:
-                            image_url = images[0].get('url')
-                            if image_url:
-                                print(f"  Image URL found: {image_url}")
-                                base_image_filename = f"tensorart_base_image_{job_id}.png"
-                                base_image_path = os.path.join(output_directory, base_image_filename)
-                                download_result = download_file(image_url, base_image_path)
-                                if download_result:
-                                    return base_image_path, image_url
-                                else:
-                                    print("  Failed to download the final image.")
-                                    return None, None
-                            else:
-                                print("  Error: 'url' key not found in image data.")
-                                print("  Job Data:", json.dumps(job_status_data, indent=2))
-                                return None, None
-                        else:
-                            print("  Error: Could not find image list or URL in successful response.")
-                            print("  Job Data:", json.dumps(job_status_data, indent=2))
-                            return None, None
-                    except Exception as e:
-                        print(f"  Error parsing successful response structure: {e}")
-                        print("  Job Data:", json.dumps(job_status_data, indent=2))
-                        return None, None
-
-                elif status == 'FAILED' or status == 'ERROR': # Adjust based on actual failure value
-                    print("Error: TensorArt job failed.")
-                    # !!! ASSUMPTION: Extract error details - VERIFY THIS STRUCTURE !!!
-                    error_details = (job_status_data.get('job', {}).get('error') or 
-                                   job_status_data.get('job', {}).get('failure_reason') or 
-                                   job_status_data.get('job', {}).get('message') or
-                                   job_status_data.get('error') or 
-                                   job_status_data.get('failure_reason') or 
-                                   job_status_data.get('message'))
-                    print(f"  Failure Reason: {error_details}")
-                    print("  Full Job Data:", json.dumps(job_status_data, indent=2))
-                    return None, None
-
-                elif status in ['PENDING', 'PROCESSING', 'RUNNING', 'QUEUED', 'WAITING', 'CREATED']: # Added WAITING and CREATED
-                    print("  Job still in progress...")
-                    continue # Continue polling
-
-                else: # Unexpected status
-                    print(f"Warning: Unknown or unexpected TensorArt job status '{status}'.")
-                    print("  Job Data:", json.dumps(job_status_data, indent=2))
-                    print("  Continuing to poll...")
-                    continue # Continue polling instead of stopping
-
-            elif poll_response.status_code == 404:
-                 print(f"Error: Polling endpoint {polling_endpoint} not found (404). Check the endpoint URL structure.")
-                 return None, None
-            else: # Other HTTP errors during polling
-                print(f"Error polling TensorArt job status. Status: {poll_response.status_code}")
-                try:
-                    error_data = poll_response.json()
-                    print("Error Response Body:", json.dumps(error_data, indent=2))
-                except json.JSONDecodeError:
-                    print("Error Response Body:", poll_response.text)
-                # Decide whether to retry or fail - here we fail after one bad poll response
-                return None, None
-
-        except requests.exceptions.Timeout:
-            print("Error: TensorArt status polling request timed out.")
-            # Optionally continue polling after a timeout? For now, we fail.
-            return None, None
-        except requests.exceptions.RequestException as e:
-            print(f"Error during TensorArt status polling: {e}")
-            # Optionally continue polling? For now, we fail.
-            return None, None
-        except Exception as e:
-            print(f"An unexpected error occurred during TensorArt polling: {e}")
-            return None, None
-
-    # If loop finishes without success
-    print("Error: TensorArt job did not complete within the maximum polling time.")
-    return None, None
-
-
-# --- RunwayML Function (Mostly unchanged, ensure it uses the URL) ---
-def generate_animation_runway(base_image_path, animation_prompt_text, output_directory, output_filename_base, seed):
-    """Generates a single animation clip using RunwayML API."""
-    print(f"\n--- Starting Animation Generation for: {output_filename_base} (RunwayML) ---")
-    if not RUNWAYML_API_SECRET: 
-        print("Error: RunwayML API secret not found")
-        return None
-    if not base_image_path:
-        print("Error: Base image path is required for Runway animation.")
-        return None
-    if not animation_prompt_text:
-        print("Error: Animation prompt text is required.")
-        return None
-
+@with_retry(config=RUNWAYML_RETRY_CONFIG)
+def create_runway_task(
+    client: RunwayML,
+    image_base64: str,
+    animation_prompt_text: str,
+    seed: int
+) -> str:
+    """
+    Create a RunwayML animation task.
+    
+    Args:
+        client: RunwayML client
+        image_base64: Base64 encoded image
+        animation_prompt_text: Animation prompt
+        seed: Random seed
+        
+    Returns:
+        str: Task ID
+        
+    Raises:
+        RunwayMLError: If task creation fails
+        RateLimitExceeded: If rate limit is exceeded
+        ValidationError: If response validation fails
+    """
     try:
-        client = RunwayML(api_key=RUNWAYML_API_SECRET)
-        print("Submitting Runway task...")
+        enhanced_prompt = f"Create a smooth, cinematic animation. {animation_prompt_text} Maintain consistent motion and high quality throughout the {ANIMATION_CONFIG['duration']}-second duration."
         
-        # Encode and validate the image
-        image_base64 = encode_image_base64(base_image_path)
-        if not image_base64:
-            print("Error: Failed to encode image")
-            return None
-        
-        # Create the task with retry logic for rate limits
-        max_retries = 5
-        base_delay = 60  # Start with 1 minute delay
-        retry_count = 0
-        
-        while retry_count < max_retries:
-            try:
-                # Enhance the animation prompt
-                enhanced_prompt = f"Create a smooth, cinematic animation. {animation_prompt_text} Maintain consistent motion and high quality throughout the 5-second duration."
-                
-                # Create the task
-                task_response = client.image_to_video.create(
-                    model=ANIMATION_MODEL,
-                    prompt_image=f"data:image/png;base64,{image_base64}",
-                    prompt_text=enhanced_prompt,
-                    duration=ANIMATION_DURATION,  # 5 seconds
-                    ratio=ANIMATION_RATIO,  # "768:1280"
-                    seed=seed,
-                    watermark=False
-                )
-                break  # If successful, break the retry loop
-                
-            except Exception as e:
-                if hasattr(e, 'response') and e.response and e.response.status_code == 429:
-                    retry_count += 1
-                    if retry_count >= max_retries:
-                        print("Error: Maximum retries reached for rate limit. Please try again tomorrow.")
-                        return None
-                    
-                    # Calculate exponential backoff delay
-                    delay = base_delay * (2 ** (retry_count - 1))
-                    print(f"Rate limit reached. Waiting {delay} seconds before retry {retry_count}/{max_retries}...")
-                    time.sleep(delay)
-                    continue
-                else:
-                    print(f"Error creating task: {str(e)}")
-                    if hasattr(e, 'response'):
-                        print(f"Response status: {e.response.status_code}")
-                        try:
-                            print(f"Response body: {e.response.json()}")
-                        except:
-                            print(f"Response text: {e.response.text}")
-                    return None
-        
-        # Get the task ID from the response
-        task_id = task_response.id
-        print(f"Runway task submitted. ID: {task_id}")
-
-        # Poll for completion with retry logic
-        max_poll_retries = 30  # Maximum number of retries
-        poll_retry_count = 0
-        poll_retry_delay = 10
-        
-        while poll_retry_count < max_poll_retries:
-            try:
-                # Get the current task status
-                task = client.tasks.retrieve(task_id)
-                status = task.status
-                print(f"Polling Runway task {task_id}... Current status: {status}")
-
-                if status in ["COMPLETED", "SUCCEEDED"]:
-                    print(f"Runway task {task_id} {status} successfully.")
-                    if hasattr(task, 'output') and task.output and len(task.output) > 0:
-                        video_url = task.output[0]
-                        print(f"Generated video URL: {video_url}")
-                        
-                        # Download the video
-                        video_filename = f"{output_filename_base}_seed{seed}.mp4"
-                        video_path = os.path.join(output_directory, video_filename)
-                        
-                        print(f"Downloading video to: {video_path}")
-                        success = download_file(video_url, video_path)
-                        
-                        if success and os.path.exists(video_path):
-                            print(f"Successfully downloaded video to: {video_path}")
-                            return video_path
-                        else:
-                            print("Error: Failed to download video file")
-                            return None
-                    else:
-                        print("Error: No video URL in task output")
-                        return None
-                elif status == "FAILED":
-                    print(f"Error: Runway task {task_id} failed.")
-                    if hasattr(task, 'error'):
-                        print(f"Error details: {task.error}")
-                    return None
-                else:
-                    print(f"Task still processing...")
-                    time.sleep(poll_retry_delay)
-                    poll_retry_count += 1
-                    
-            except Exception as e:
-                print(f"Error polling Runway task: {str(e)}")
-                poll_retry_count += 1
-                time.sleep(poll_retry_delay)
-                
-        print("Error: Maximum polling retries reached")
-        return None
-        
-    except Exception as e:
-        print(f"Error in Runway animation generation: {str(e)}")
-        return None
-
-
-# --- Main Execution ---
-def main():
-    print("Starting Gym Short Generation Workflow (v2 - Async TensorArt)...")
-
-    if not check_credentials():
-        sys.exit(1) # Exit if credentials are missing
-
-    # 1. Generate Base Image (Now Asynchronous)
-    base_image_local_path, base_image_url = generate_base_image_tensorart(OUTPUT_FOLDER)
-
-    if not base_image_local_path or not base_image_url:
-        print("\nWorkflow aborted: Base image generation failed.")
-        sys.exit(1) # Exit if base image fails
-
-    print(f"\nBase image saved to: {base_image_local_path}")
-    print(f"Using Base Image for animations: {base_image_local_path}")
-
-    # Add confirmation prompt before starting animations
-    print("\nReady to start generating animations.")
-    response = input("Do you want to continue with animation generation? (yes/no): ").lower().strip()
-    if response != 'yes':
-        print("Animation generation cancelled by user.")
-        sys.exit(0)
-
-    # 2. Generate Animation Clips
-    generated_clips = []
-    current_seed = ANIMATION_SEED_START
-
-    for country_key, country_data in COUNTRIES.items():
-        prompt_id = country_data["id"]
-        prompt_text = country_data["animation_prompt"]  # Use animation_prompt instead of base_image_prompt
-        output_filename_base = f"animation_{prompt_id}"
-
-        video_path = generate_animation_runway(
-            base_image_path=base_image_local_path,
-            animation_prompt_text=prompt_text,
-            output_directory=OUTPUT_FOLDER,
-            output_filename_base=output_filename_base,
-            seed=current_seed
+        task_response = client.image_to_video.create(
+            model=ANIMATION_CONFIG['model'],
+            prompt_image=f"data:image/png;base64,{image_base64}",
+            prompt_text=enhanced_prompt,
+            duration=ANIMATION_CONFIG['duration'],
+            ratio=ANIMATION_CONFIG['ratio'],
+            seed=seed,
+            watermark=False
         )
+        
+        validation_result = validate_runway_task_response(task_response)
+        if not validation_result.is_valid:
+            error_messages = [str(e) for e in validation_result.errors]
+            raise ValidationError(f"Invalid RunwayML task response: {'; '.join(error_messages)}")
+            
+        return validation_result.value['id']
+        
+    except Exception as e:
+        if hasattr(e, 'response') and e.response and e.response.status_code == 429:
+            retry_after = extract_retry_after(e.response)
+            if retry_after:
+                raise RateLimitExceeded("Rate limit exceeded", retry_after)
+            else:
+                raise RateLimitExceeded("Rate limit exceeded")
+                
+        raise RunwayMLError(f"Task creation failed: {str(e)}",
+                          status_code=getattr(e.response, 'status_code', None),
+                          response_data=getattr(e.response, 'json', lambda: None)())
 
-        if video_path:
-            generated_clips.append(video_path)
-        else:
-            print(f"Failed to generate animation for prompt: {prompt_id}")
+@with_retry(config=RetryConfig(max_retries=15, base_delay=10.0))
+def poll_runway_task(
+    client: RunwayML,
+    task_id: str,
+    output_directory: Union[str, Path],
+    output_filename_base: str,
+    seed: int
+) -> Optional[str]:
+    """
+    Poll RunwayML task until completion.
+    
+    Args:
+        client: RunwayML client
+        task_id: Task ID
+        output_directory: Output directory
+        output_filename_base: Base filename
+        seed: Random seed
+        
+    Returns:
+        Optional[str]: Path to generated video
+        
+    Raises:
+        RunwayMLError: If polling fails
+        RateLimitExceeded: If rate limit is exceeded
+        ValidationError: If response validation fails
+    """
+    max_poll_retries = 30
+    poll_retry_delay = 10
+    
+    for attempt in range(max_poll_retries):
+        try:
+            task = client.image_to_video.get(task_id)
+            
+            validation_result = validate_runway_task_status_response(task)
+            if not validation_result.is_valid:
+                error_messages = [str(e) for e in validation_result.errors]
+                raise ValidationError(f"Invalid RunwayML task status response: {'; '.join(error_messages)}")
+            
+            status = task.status.upper()
+            
+            if status == TaskStatus.SUCCEEDED.value:
+                output_path = Path(output_directory) / f"{output_filename_base}_{seed}.mp4"
+                video_url = task.output.get('video_url')
+                
+                if not video_url:
+                    raise RunwayMLError("No video URL in successful task response")
+                    
+                downloaded_path = download_file(video_url, output_path)
+                logger.info(f"Animation saved to: {downloaded_path}")
+                return str(downloaded_path)
+                
+            elif status == TaskStatus.FAILED.value:
+                error_message = getattr(task, 'error', 'Unknown error')
+                raise RunwayMLError(f"Task failed: {error_message}")
+                
+            logger.info(f"Task status: {status} (attempt {attempt + 1}/{max_poll_retries})")
+            time.sleep(poll_retry_delay)
+            
+        except Exception as e:
+            if hasattr(e, 'response') and e.response and e.response.status_code == 429:
+                retry_after = extract_retry_after(e.response)
+                if retry_after:
+                    raise RateLimitExceeded("Rate limit exceeded", retry_after)
+                else:
+                    raise RateLimitExceeded("Rate limit exceeded")
+                    
+            logger.warning(f"Polling attempt {attempt + 1} failed: {str(e)}")
+            if attempt == max_poll_retries - 1:
+                raise RunwayMLError(f"Maximum polling retries reached: {str(e)}")
+            continue
+            
+    raise RunwayMLError("Task polling timed out")
 
-        current_seed += 1
+def generate_animation_runway(
+    base_image_path: Union[str, Path],
+    animation_prompt_text: str,
+    output_directory: Union[str, Path],
+    output_filename_base: str,
+    seed: int
+) -> Optional[str]:
+    """
+    Generate an animation using RunwayML API.
+    
+    Args:
+        base_image_path: Path to base image
+        animation_prompt_text: Animation prompt
+        output_directory: Output directory
+        output_filename_base: Base filename
+        seed: Random seed
+        
+    Returns:
+        Optional[str]: Path to generated video
+        
+    Raises:
+        RunwayMLError: If generation fails
+        ConfigurationError: If credentials are missing
+        FileOperationError: If file operations fail
+    """
+    logger.info(f"Starting Animation Generation for: {output_filename_base}")
+    
+    api_secret = credentials.get_runwayml_secret()
+    
+    if not base_image_path:
+        raise ValidationError("Base image path is required")
+    if not animation_prompt_text:
+        raise ValidationError("Animation prompt text is required")
+        
+    try:
+        client = RunwayML(api_key=api_secret)
+        image_base64 = encode_image_base64(base_image_path)
+        
+        task_id = create_runway_task(client, image_base64, animation_prompt_text, seed)
+        logger.info(f"RunwayML task submitted successfully. Task ID: {task_id}")
+        
+        return poll_runway_task(client, task_id, output_directory, output_filename_base, seed)
+        
+    except (RunwayMLError, FileOperationError) as e:
+        logger.error(f"RunwayML operation failed: {str(e)}")
+        if hasattr(e, 'status_code') and e.status_code:
+            logger.error(f"Status code: {e.status_code}")
+        if hasattr(e, 'response_data') and e.response_data:
+            logger.error(f"Response data: {json.dumps(e.response_data, indent=2)}")
+        return None
 
-    # 3. Conclusion
-    print("\n--- Workflow Finished ---")
-    if base_image_local_path:
-         print(f"Base image saved at: {base_image_local_path}")
-    if generated_clips:
-        print("Generated animation clips:")
-        for clip in generated_clips:
-            print(f"- {clip}")
-        print(f"\nAll files are located in the '{OUTPUT_FOLDER}' directory.")
-        print("You can now use these clips in a video editor to create your 30-second YouTube Short.")
-    else:
-        print("No animation clips were successfully generated.")
-        if base_image_local_path:
-             print("Only the base image was generated.")
+# --- Workflow Functions ---
 
-def generate_all_base_images(output_directory):
-    """Generates all base images for the different countries."""
-    print("\n--- Generating All Base Images ---")
+def generate_all_base_images(output_directory: Union[str, Path]) -> List[Dict[str, str]]:
+    """
+    Generate base images for all countries.
+    
+    Args:
+        output_directory: Output directory
+        
+    Returns:
+        List[Dict[str, str]]: List of generated image info
+        
+    Raises:
+        WorkflowError: If generation fails
+    """
+    logger.info("Generating All Base Images")
     base_images = []
     
     for country_key, country_data in COUNTRIES.items():
         prompt_id = country_data["id"]
         prompt_text = country_data["base_image_prompt"]
         
-        print(f"\nGenerating base image for: {prompt_id}")
+        logger.info(f"Generating base image for: {prompt_id}")
         base_image_path, _ = generate_base_image_tensorart(
             output_directory=output_directory,
             prompt_id=prompt_id,
@@ -561,14 +611,114 @@ def generate_all_base_images(output_directory):
         if base_image_path:
             base_images.append({
                 "id": prompt_id,
-                "path": base_image_path
+                "path": str(base_image_path)
             })
-            print(f"Base image for {prompt_id} saved to: {base_image_path}")
+            logger.info(f"Base image for {prompt_id} saved to: {base_image_path}")
         else:
-            print(f"Failed to generate base image for: {prompt_id}")
+            logger.error(f"Failed to generate base image for: {prompt_id}")
     
     return base_images
 
-# Remove or comment out the main execution block if it's only used for imports
-# if __name__ == "__main__":
-#     main()
+def generate_all_animations(
+    base_image_path: Union[str, Path],
+    output_directory: Union[str, Path],
+    start_seed: Optional[int] = None
+) -> List[str]:
+    """
+    Generate animations for all countries.
+    
+    Args:
+        base_image_path: Path to base image
+        output_directory: Output directory
+        start_seed: Optional starting seed
+        
+    Returns:
+        List[str]: List of generated video paths
+        
+    Raises:
+        WorkflowError: If generation fails
+    """
+    logger.info("Generating All Animations")
+    generated_clips = []
+    current_seed = start_seed or ANIMATION_CONFIG['seed_start']
+    
+    for country_key, country_data in COUNTRIES.items():
+        try:
+            prompt_id = country_data["id"]
+            prompt_text = country_data["animation_prompt"]
+            output_filename_base = f"animation_{prompt_id}"
+            
+            video_path = generate_animation_runway(
+                base_image_path=base_image_path,
+                animation_prompt_text=prompt_text,
+                output_directory=output_directory,
+                output_filename_base=output_filename_base,
+                seed=current_seed
+            )
+            
+            if video_path:
+                generated_clips.append(video_path)
+            else:
+                logger.error(f"Failed to generate animation for prompt: {prompt_id}")
+                
+            current_seed += 1
+            
+        except Exception as e:
+            logger.error(f"Error generating animation for {country_key}: {str(e)}")
+            continue
+    
+    return generated_clips
+
+def main():
+    """
+    Main workflow execution.
+    
+    Raises:
+        WorkflowError: If workflow fails
+        ConfigurationError: If configuration is missing
+    """
+    logger.info("Starting Gym Short Generation Workflow")
+    
+    try:
+        check_credentials()
+        
+        # Generate base image
+        base_image_local_path, base_image_url = generate_base_image_tensorart(OUTPUT_FOLDER)
+        if not base_image_local_path or not base_image_url:
+            raise WorkflowError("Base image generation failed")
+            
+        logger.info(f"Base image saved to: {base_image_local_path}")
+        
+        # User confirmation
+        response = input("Do you want to continue with animation generation? (yes/no): ").lower().strip()
+        if response != 'yes':
+            logger.info("Animation generation cancelled by user")
+            return
+            
+        # Generate animations
+        generated_clips = generate_all_animations(
+            base_image_path=base_image_local_path,
+            output_directory=OUTPUT_FOLDER
+        )
+        
+        # Workflow conclusion
+        logger.info("--- Workflow Finished ---")
+        if base_image_local_path:
+            logger.info(f"Base image saved at: {base_image_local_path}")
+        if generated_clips:
+            logger.info("Generated animation clips:")
+            for clip in generated_clips:
+                logger.info(f"- {clip}")
+            logger.info(f"All files are located in the '{OUTPUT_FOLDER}' directory")
+        else:
+            logger.warning("No animation clips were successfully generated")
+            
+    except Exception as e:
+        raise WorkflowError(f"Workflow failed: {str(e)}")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        logger.error(f"Fatal error: {str(e)}")
+        sys.exit(1)

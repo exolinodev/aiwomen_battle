@@ -48,6 +48,7 @@ output_gym_short_v2/
 *.bmp
 *.tiff
 *.ico
+config.json
 
 # Temporary files
 *.tmp
@@ -75,4 +76,4 @@ workflow_output_*/
 test_workflow_*/
 
 # Specific paths
-/Users/dev/womanareoundtheworld/Generation/output_gym_short_v2 
+Users/dev/womanareoundtheworld/Generation/output_gym_short_v2

@@ -28,7 +28,7 @@ def test_video_editor():
         # Check if voice-over exists
         if not os.path.exists(test_voiceover_path):
             print("Voice-over not found. Please run test_voiceover_only.py first.")
-            return False
+            assert False, "Voice-over file not found"
         
         # Output path for the combined video
         output_path = os.path.join(test_dir, "combined_video.mp4")
@@ -41,20 +41,19 @@ def test_video_editor():
             output_path=output_path
         )
         
-        if success and os.path.exists(output_path):
-            print(f"Successfully combined video with voice-over: {output_path}")
-            return True
-        else:
-            print("Failed to combine video with voice-over")
-            return False
+        # Assert that the combination was successful and the file exists
+        assert success, "Failed to combine video with voice-over"
+        assert os.path.exists(output_path), f"Combined video file not found at {output_path}"
+        print(f"Successfully combined video with voice-over: {output_path}")
     
     except Exception as e:
         print(f"Error testing video editor: {e}")
-        return False
+        raise  # Re-raise the exception to fail the test
 
 if __name__ == "__main__":
     print("Testing video editor...")
-    if test_video_editor():
+    try:
+        test_video_editor()
         print("\nVideo editor test passed!")
-    else:
+    except:
         print("\nVideo editor test failed!") 
