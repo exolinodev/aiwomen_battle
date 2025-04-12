@@ -8,26 +8,36 @@ A Python project for generating educational videos about women's experiences aro
 watw/
 ├── src/
 │   └── watw/
-│       ├── core/           # Core functionality
-│       │   ├── video_editor.py
-│       │   ├── voiceover.py
-│       │   └── render.py
-│       ├── utils/          # Utility functions
-│       │   ├── common/     # Common utilities
+│       ├── api/                # API clients
+│       │   ├── clients/        # API client implementations
+│       │   │   ├── base.py     # Base API client
+│       │   │   ├── elevenlabs.py
+│       │   │   ├── runway.py
+│       │   │   └── tensorart.py
+│       │   ├── config.py       # API configuration
+│       │   └── utils/         
+│       ├── core/               # Core functionality
+│       │   ├── Generation/     # Content generation
+│       │   ├── video/          # Video editing
+│       │   │   ├── base.py     # Base VideoEditor class
+│       │   │   ├── rhythmic.py 
+│       │   │   └── enhanced.py 
+│       │   ├── workflow/       # Workflow management
+│       │   ├── voiceover.py    # Voice generation
+│       │   └── render.py       # Rendering functionality
+│       ├── utils/              # Utility functions
+│       │   ├── api/            # API utilities
+│       │   ├── common/         # Common utilities
 │       │   │   ├── file_utils.py
 │       │   │   ├── logging_utils.py
 │       │   │   └── validation_utils.py
-│       │   ├── countries.py
-│       │   └── prompts.py
-│       └── config/         # Configuration management
-│           ├── __init__.py
-│           └── config.py
-├── tests/                  # Test files
-├── config/                 # Configuration files
-│   ├── config.json         # Your configuration file
-│   ├── config.example.json # Example configuration
-│   └── .env               # Environment variables
-└── setup.py               # Package setup file
+│       │   └── video/          # Video utilities
+│       └── config/             # Configuration management
+├── tests/                      # Test files
+├── config/                     # Configuration files
+│   ├── config.json             # Your configuration file
+│   └── config.example.json     # Example configuration
+└── setup.py                    # Package setup file
 ```
 
 ## Installation
@@ -46,7 +56,41 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 3. Install the package:
 ```bash
+# For production use:
 pip install -e .
+
+# For development (includes testing and linting tools):
+pip install -e ".[dev]"
+```
+
+## Development Tools
+
+The project includes several development tools for testing, linting, and code formatting:
+
+- **Testing**: pytest with coverage reporting
+- **Type Checking**: mypy
+- **Linting**: ruff (replaces flake8 and isort)
+- **Code Formatting**: black
+- **Mocking**: unittest-mock
+
+To run the development tools:
+
+```bash
+# Run tests
+pytest
+
+# Run tests with coverage
+pytest --cov=src
+
+# Type checking
+mypy src/
+
+# Linting
+ruff check src/
+
+# Format code
+black src/
+ruff format src/
 ```
 
 ## Configuration
@@ -55,7 +99,7 @@ The project uses a centralized configuration system that combines:
 
 1. Default values in the code
 2. Configuration file (`config/config.json`)
-3. Environment variables (`.env` file)
+3. Environment variables (using the `WATW_` prefix)
 
 ### Setting Up Configuration
 
@@ -83,17 +127,11 @@ cp config/config.example.json config/config.json
 }
 ```
 
-3. Create a `.env` file for sensitive information:
+3. Alternatively, set environment variables with the `WATW_` prefix:
 ```
-ELEVENLABS_API_KEY=your-elevenlabs-api-key-here
-RUNWAY_API_KEY=your-runway-api-key-here
+WATW_ELEVENLABS_API_KEY=your-elevenlabs-api-key-here
+WATW_RUNWAY_API_KEY=your-runway-api-key-here
 ```
-
-### Configuration Priority
-
-1. Environment variables (highest priority)
-2. Configuration file values
-3. Default values in code (lowest priority)
 
 ## Usage
 
@@ -110,78 +148,143 @@ python -m watw --country US --output-dir output
 - `--config`: Path to configuration file (default: "config/config.json")
 - `--log-file`: Path to log file (optional)
 
-## Utilities
+## API Clients
 
-The project provides a set of common utilities that can be used across the codebase:
-
-### File Utilities
+The project provides unified API clients for various services with robust error handling:
 
 ```python
-from watw.utils import ensure_directory, get_file_extension, create_temp_file, copy_file
+from watw.api import elevenlabs, runway, tensorart
+from watw.core.voiceover import VoiceoverGenerator, VoiceoverError
 
-# Ensure a directory exists
-output_dir = ensure_directory("output")
-
-# Get file extension
-extension = get_file_extension("video.mp4")  # Returns ".mp4"
-
-# Create a temporary file
-temp_file = create_temp_file("content", extension=".txt")
-
-# Copy a file
-copy_file("source.txt", "destination.txt")
+try:
+    # Initialize the voiceover generator
+    generator = VoiceoverGenerator()
+    
+    # Generate a voiceover with error handling
+    audio_path = generator.generate_voiceover(
+        video_number=1,
+        country1="Japan",
+        country2="France",
+        output_path="output/voiceover.mp3",
+        voice="Rachel",
+        model="eleven_monolingual_v1"
+    )
+    print(f"Generated voice-over at: {audio_path}")
+except VoiceoverError as e:
+    print(f"Failed to generate voice-over: {e}")
+    # Handle the error appropriately
 ```
 
-### Logging Utilities
+### Error Handling
 
+The project implements comprehensive error handling for all API operations:
+
+1. **API Initialization Errors**
+   - Missing or invalid API keys
+   - Network connectivity issues
+   - Configuration problems
+
+2. **API Communication Errors**
+   - Rate limiting
+   - Invalid requests
+   - Server errors
+
+3. **File System Errors**
+   - Permission issues
+   - Disk space problems
+   - Invalid file paths
+
+4. **Unexpected Errors**
+   - All other errors are caught and wrapped in appropriate exception types
+
+Example error handling:
 ```python
-from watw.utils import setup_logger, log_execution_time, log_function_call
-
-# Set up a logger
-logger = setup_logger(name="my_module", log_file="logs/my_module.log")
-
-# Log execution time of a function
-@log_execution_time(logger)
-def my_function():
-    # Function implementation
-    pass
-
-# Log function calls
-@log_function_call(logger)
-def another_function(arg1, arg2):
-    # Function implementation
-    pass
+try:
+    generator = VoiceoverGenerator()
+    output_path = generator.generate_voiceover(...)
+except VoiceoverError as e:
+    # Handle voice-over specific errors
+    print(f"Voice-over generation failed: {e}")
+except Exception as e:
+    # Handle unexpected errors
+    print(f"Unexpected error: {e}")
 ```
 
-### Validation Utilities
+## Video Editing
+
+The project includes a modular video editing system:
 
 ```python
-from watw.utils import (
-    ValidationError,
-    validate_file_exists,
-    validate_directory_exists,
-    validate_required_fields,
-    validate_file_extension,
-    validate_api_key,
+from watw.core.video import VideoEditor, RhythmicVideoEditor, EnhancedVideoEditor
+
+# Basic video editing
+editor = VideoEditor()
+editor.combine_video_with_audio(
+    video_path="input/video.mp4",
+    audio_path="input/audio.mp3",
+    output_path="output/video_with_audio.mp4"
 )
 
-# Validate that a file exists
-file_path = validate_file_exists("input.txt")
-
-# Validate that a directory exists
-dir_path = validate_directory_exists("output")
-
-# Validate required fields in a dictionary
-validate_required_fields(data, ["name", "age"])
-
-# Validate file extension
-validate_file_extension("video.mp4", [".mp4", ".avi"])
-
-# Validate API key
-validate_api_key(api_key, "ServiceName")
+# Rhythmic video editing (synchronized with music)
+rhythmic_editor = RhythmicVideoEditor()
+rhythmic_editor.create_rhythmic_video(
+    video_clips_dir="input/clips",
+    audio_path="input/music.mp3",
+    output_path="output/rhythmic_video.mp4"
+)
 ```
 
-## Development
+## Testing
+
+The project includes comprehensive test coverage with a focus on error handling:
+
+1. **Unit Tests**
+   - Test individual components in isolation
+   - Mock external dependencies
+   - Verify error handling
+
+2. **Integration Tests**
+   - Test component interactions
+   - Verify API communication
+   - Test file system operations
+
+3. **Error Scenario Tests**
+   - Test API initialization failures
+   - Test API communication errors
+   - Test file system errors
+   - Test unexpected errors
+
+Example test structure:
+```python
+from unittest.mock import patch, MagicMock
+from watw.core.voiceover import VoiceoverGenerator, VoiceoverError
+from watw.api.clients.base import APIError
+
+class TestVoiceover(unittest.TestCase):
+    def setUp(self):
+        self.mock_client = MagicMock()
+        self.patcher = patch('watw.core.voiceover.ElevenLabsClient', 
+                           return_value=self.mock_client)
+        self.patcher.start()
+        
+    def test_generate_voiceover(self):
+        # Test successful voiceover generation
+        generator = VoiceoverGenerator()
+        output_path = generator.generate_voiceover(...)
+        self.assertIsInstance(output_path, Path)
+        
+    def test_api_error(self):
+        # Test API error handling
+        self.mock_client.generate_and_save.side_effect = APIError("API error")
+        generator = VoiceoverGenerator()
+        with self.assertRaises(VoiceoverError):
+            generator.generate_voiceover(...)
+            
+    def tearDown(self):
+        self.patcher.stop()
+```
+
+### Running Tests
 
 1. Install development dependencies:
 ```bash
@@ -193,6 +296,16 @@ pip install -e ".[dev]"
 python -m pytest tests/
 ```
 
+3. Run tests with coverage:
+```bash
+python -m pytest --cov=src tests/
+```
+
+4. Type checking:
+```bash
+mypy src/
+```
+
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+This project is licensed under the MIT License - see the LICENSE file for details.

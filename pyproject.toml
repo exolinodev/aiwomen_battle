@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "watw"
+version = "0.1.0"
+description = "Women Around The World Video Generation"
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "click",
+    "elevenlabs",
+    "ffmpeg-python",
+    "librosa",
+    "moviepy",
+    "numpy",
+    "Pillow",
+    "PyYAML",
+    "python-dotenv",
+    "requests",
+    "rich",
+    "runwayml",
+    "scipy",
+    "typing-extensions>=4.0.0",
+]
+dynamic = ["classifiers"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "mypy",
+    "ruff",
+    "black",
+]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = [
+    "moviepy.*",
+    "scipy.*",
+    "matplotlib.*",
+    "numpy.*"
+]
+ignore_missing_imports = true 

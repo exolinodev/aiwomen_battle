@@ -35,12 +35,30 @@ setup(
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     install_requires=[
+        "click",
         "elevenlabs",
+        "ffmpeg-python",
+        "librosa",
         "moviepy",
+        "numpy",
+        "Pillow",
+        "PyYAML",
         "python-dotenv",
         "requests",
-        "logging",  # Added for consistent logging
+        "rich",
+        "runwayml",
+        "scipy",
+        "typing-extensions>=4.0.0",  # Required for ParamSpec in Python < 3.10
     ],
+    extras_require={
+        'dev': [
+            'pytest',
+            'pytest-cov',
+            'mypy',
+            'ruff',  # Using ruff instead of flake8 and isort as it's faster and more modern
+            'black',
+        ]
+    },
     python_requires=">=3.8",
     author="Your Name",
     author_email="your.email@example.com",
